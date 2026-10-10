@@ -92,7 +92,7 @@ func (m model) View() tea.View {
 		b.WriteString(strings.Repeat("\n", pad))
 	}
 	if m.err != nil {
-		b.WriteString(upS.Render(m.clip("✗ エラー "+m.err.Error(), 0)))
+		b.WriteString(upS.Render(m.clip("✗ "+m.err.Error(), 0)))
 	}
 	b.WriteString("\n" + m.footer())
 
@@ -125,12 +125,12 @@ func (m model) header() string {
 		clockS = pauseS
 	}
 	chips = append(chips, clockS.Render(m.asOf.Local().Format("15:04:05")))
-	chips = append(chips, dimS.Render("窓 ")+fmtDur(m.window()))
+	chips = append(chips, dimS.Render("window ")+fmtDur(m.window()))
 	if m.diff && m.screen == screenTop {
-		chips = append(chips, redS.Render("差分 Δ "+fmtDur(m.window())))
+		chips = append(chips, redS.Render("Δ vs previous "+fmtDur(m.window())))
 	}
 	if m.otlp != "" {
-		chips = append(chips, dimS.Render("受信 ")+m.otlp)
+		chips = append(chips, dimS.Render("otlp ")+m.otlp)
 	}
 
 	// Drop chips from the right until everything fits.
@@ -170,7 +170,11 @@ func fmtDur(d time.Duration) string {
 
 func (m model) viewProcs(b *strings.Builder, rows int) {
 	if len(m.procs) == 0 {
-		b.WriteString(dimS.Render("  受信待機中 ") + "awaiting profiles" + redS.Render(" ▌") + "\n")
+		wait := "  awaiting profiles"
+		if m.otlp != "" {
+			wait += dimS.Render(" on OTLP ") + m.otlp
+		}
+		b.WriteString(wait + redS.Render(" ▌") + "\n")
 		return
 	}
 	var all int64

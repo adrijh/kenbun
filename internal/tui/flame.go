@@ -224,16 +224,16 @@ func (m model) viewFlame(b *strings.Builder, rows int) {
 		dimS.Render("  total ") + fmt.Sprintf("%.1f%%", pct(selNode.Total, all)) +
 		dimS.Render("  self ") + fmt.Sprintf("%.1f%%", pct(selNode.Self, all))
 	if len(focus) > 1 {
-		status += dimS.Render("  拡大 zoom ") + redS.Render(focus[len(focus)-1].Name)
+		status += dimS.Render("  zoom ") + redS.Render(focus[len(focus)-1].Name)
 	}
 	if m.search != "" || m.searching {
 		cursor := ""
 		if m.searching {
 			cursor = redS.Render("▌")
 		}
-		chip := dimS.Render("  検索 ") + hit.Render(" /"+m.search+" ")
+		chip := dimS.Render("  search ") + hit.Render(" /"+m.search+" ")
 		if m.exact {
-			chip = dimS.Render("  強調 ") + hit.Render(" "+m.search+" ")
+			chip = dimS.Render("  highlight ") + hit.Render(" "+m.search+" ")
 		}
 		status += chip + cursor +
 			dimS.Render(fmt.Sprintf("  %.1f%% highlighted", pct(matchTotal(focus[len(focus)-1], m.highlighted), all)))

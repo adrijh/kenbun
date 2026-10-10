@@ -1,0 +1,193 @@
+<p align="center">
+  <img alt="見聞" src="https://img.shields.io/badge/%E8%A6%8B%E8%81%9E-kenbun-c34043?style=for-the-badge&labelColor=c34043&color=1f1f28">
+</p>
+
+<h1 align="center">kenbun</h1>
+
+<p align="center">
+  <em>見聞 · to see and to hear</em><br>
+  OpenTelemetry profiles in your terminal: an embedded collector, an eBPF profiler, and a TUI.
+</p>
+
+<p align="center">
+  <img alt="Go 1.27" src="https://img.shields.io/badge/go-1.27-7e9cd8?style=flat-square&labelColor=1f1f28">
+  <img alt="OpenTelemetry Collector v0.162" src="https://img.shields.io/badge/otelcol-v0.162-938aa9?style=flat-square&labelColor=1f1f28">
+  <img alt="eBPF: Linux" src="https://img.shields.io/badge/eBPF-linux-98bb6c?style=flat-square&labelColor=1f1f28">
+  <img alt="theme: Kanagawa" src="https://img.shields.io/badge/theme-kanagawa-e6c384?style=flat-square&labelColor=1f1f28">
+</p>
+
+---
+
+kenbun is a single binary that receives [OTLP profiles](https://opentelemetry.io/docs/specs/otel/profiles/),
+keeps a sliding window of them in memory, and lets you read them where you already
+work: the terminal. It can profile the machine it runs on with the
+[OpenTelemetry eBPF profiler](https://github.com/open-telemetry/opentelemetry-ebpf-profiler),
+deploy itself to a Kubernetes cluster, and tell you when a Python coroutine is
+holding the asyncio event loop hostage.
+
+- **Zero setup.** `sudo kenbun --profile` profiles every process on the machine, no instrumentation.
+- **Any OTLP source.** An embedded OpenTelemetry Collector listens on `:4317`; point SDKs or other profilers at it.
+- **Processes → functions ⇄ flame graph**, over a 30s–15m window you can pause and diff.
+- **Event loop blocking.** On- and off-CPU time tells you which callbacks block asyncio, and whether they burn CPU or wait.
+- **Kubernetes in one command.** `kenbun k8s deploy` runs a profiler on every node and kenbun to collect it.
+
+## 見 · What it looks like
+
+Processes ranked by CPU over the window
+
+<img alt="kenbun process list" src="docs/procs.png" width="820">
+
+A process's hottest functions, self and total; `d` diffs them against the previous window
+
+<img alt="kenbun top functions" src="docs/functions.png" width="820">
+
+The flame graph
+
+<img alt="kenbun flame graph" src="docs/flame.png" width="820">
+
+And an asyncio event loop: how much of its time callbacks held it, and whether they computed or waited
+
+<img alt="kenbun asyncio loop view" src="docs/loop.png" width="820">
+
+
+## 始 · Quick start
+
+Build from source (Go 1.27, no cgo):
+
+```bash
+go install github.com/adrijh/kenbun@latest
+```
+
+Profile this machine (Linux 5.10+, amd64 or arm64, root for eBPF):
+
+```bash
+sudo kenbun --profile
+```
+
+Or just receive profiles from your own OTLP senders. kenbun listens on
+`localhost:4317`, or the next free port if that one is taken
+
+```bash
+kenbun
+```
+
+Keep a capture and read it later
+
+```bash
+sudo kenbun --profile --dump capture.jsonl
+kenbun view capture.jsonl
+```
+
+## 道 · Commands
+
+| Command | |
+|---|---|
+| `kenbun [--otlp addr] [--dump file] [--profile]` | Receive profiles and open the TUI. `--profile` also runs the eBPF profiler. |
+| `kenbun view file.jsonl[.gz]` | Open a capture from `--dump` offline. |
+| `kenbun serve [--otlp addr] [--http addr]` | Headless: receive profiles and serve the HTTP API on `:7070`. |
+| `kenbun tui [--addr host:port]` | TUI for a remote `kenbun serve`. |
+| `kenbun agent [--to host:port]` | eBPF profiler for a Kubernetes node, forwarding to kenbun. |
+| `kenbun k8s deploy \| tui \| destroy \| manifests` | Run it all in a cluster. See [Kubernetes](#船--kubernetes). |
+
+The TUI writes its logs (and the collector's) to `$XDG_STATE_HOME/kenbun/kenbun.log`
+
+
+## 波 · asyncio loop blocking
+
+A coroutine that calls `time.sleep()`, `requests.get()` or a blocking database
+driver stops the whole event loop, yet barely shows up in a CPU profile: the
+thread is asleep, not burning CPU. kenbun combines the eBPF profiler's on-CPU
+samples with its off-CPU probe (time spent switched out, and where) and reads
+each loop thread's stacks:
+
+| Stack | Counts as |
+|---|---|
+| inside `Handle._run`, on CPU | **blocked, cpu**: the callback is computing |
+| inside `Handle._run`, off CPU | **blocked, wait**: the callback sleeps or does blocking I/O |
+| off CPU in `Selector.select` | **idle**: the loop has nothing to do |
+
+Each blocking stack is charged to its callback: the first Python frame under
+`Handle._run`, normally your handler coroutine. Waiting inside callbacks should be
+close to 0%; move blocking calls to `asyncio.to_thread()` or an executor. CPU
+inside callbacks is your actual work: keep each callback short.
+
+Notes:
+
+- Off-CPU time is sampled: the probe records 20% of context switches, so waiting
+  shares are estimates that settle over longer windows. CPU shares are sampled
+  steadily at 97 Hz.
+- Off-CPU samples are kept only inside asyncio loops; elsewhere kenbun stays an
+  on-CPU profiler.
+- Needs CPython's pure-Python `asyncio` loop. uvloop runs its loop in compiled
+  code, with no Python frames to read.
+
+## 船 · Kubernetes
+
+`kenbun k8s` drives `kubectl` with your kubeconfig and context; there is nothing
+to install in the cluster beforehand.
+
+```bash
+make push                                   # multi-arch image to ghcr.io/adrijh/kenbun:<git describe>
+make build                                  # a binary whose default image is that tag
+./bin/kenbun k8s deploy --context my-cluster
+./bin/kenbun k8s tui --context my-cluster   # port-forwards and opens the TUI
+```
+
+`deploy` creates a `kenbun` namespace with:
+
+- **kenbun** (Deployment): `kenbun serve`, receiving OTLP on `kenbun.kenbun.svc:4317`.
+- **kenbun-profiler** (DaemonSet): `kenbun agent` on every node, from the same image,
+  so the Alpha profiles protocol always matches. It runs the eBPF profiler with
+  off-CPU sampling and the collector's `k8s_attributes` processor.
+
+Pods are named `service/container`, e.g. `argo-cd/redis`: Helm gives every
+component of a release the same `service.name`, and the container tells them
+apart. Processes outside pods keep their executable name.
+
+The profiler needs nodes in the host PID namespace: real nodes, not k3d or kind
+(deploy with `--profiler=false` there). `kenbun k8s destroy` removes everything.
+
+## 構 · How it works
+
+```text
+ OTLP senders ─┐
+               ├─▶ embedded OTel Collector ─▶ ingest.Convert ─▶ SQLite (in memory) ─▶ TUI
+ eBPF profiler ┘    (otlp, profiling,          pprofile →        30 min retention      HTTP API
+                     offcpu)                   kenbun samples
+```
+
+- **Collector.** kenbun embeds the OpenTelemetry Collector with the OTLP receiver,
+  the eBPF profiling receiver and its off-CPU probe, a `file` exporter for `--dump`,
+  and its own `kenbun` exporter. Config is YAML layered from flags (`otel.yaml`,
+  `agent.yaml`).
+- **Ingest.** Each OTLP batch becomes plain samples: time, process, thread, on/off
+  CPU, frames (leaf first) and weight. kenbun's own processes are skipped.
+- **Store.** Portable SQL through `database/sql` on a pure-Go SQLite. The database
+  filters and sums; self/total, flame trees and loop analysis happen in Go. Samples
+  older than 30 minutes and the stacks nobody uses any more are pruned every 30s.
+- **API.** `kenbun serve` exposes the store over HTTP, and the TUI reads it the same
+  way it reads the local store:
+
+  ```text
+  GET /api/processes?from=&to=                → processes by on-CPU weight
+  GET /api/stacks?process=&from=&to=          → on-CPU stacks
+  GET /api/threadstacks?process=&from=&to=    → stacks per thread, on and off CPU
+  ```
+
+  Times are unix nanoseconds, ranges are `[from, to)`.
+
+## 作 · Development
+
+```bash
+make build    # bin/kenbun
+make test     # go vet + go test
+make image    # local image for this machine's arch
+```
+
+Tests run on real captures in `internal/ingest/testdata/`: a CPU-heavy Python app
+(`profiles.jsonl`) and the asyncio demo under `--profile` (`asyncio.jsonl.gz`).
+`inspect_profiles.py` summarizes any `--dump` file independently of kenbun, which
+is how the expected numbers were checked.
+
+`make screenshots` regenerates the images above from the same fixtures, rendering
+the TUI's real output with [freeze](https://github.com/charmbracelet/freeze).

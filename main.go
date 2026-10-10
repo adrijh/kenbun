@@ -32,6 +32,7 @@ import (
 
 	"github.com/adrijh/kenbun/internal/api"
 	"github.com/adrijh/kenbun/internal/ingest"
+	"github.com/adrijh/kenbun/internal/k8s"
 	"github.com/adrijh/kenbun/internal/store"
 	"github.com/adrijh/kenbun/internal/store/sqlite"
 	"github.com/adrijh/kenbun/internal/tui"
@@ -51,6 +52,13 @@ const usage = `kenbun: OTLP profiles in your terminal
   kenbun view file.jsonl                     show a capture (from --dump) offline
   kenbun serve [--otlp addr] [--http addr]   receive profiles and serve the HTTP API
   kenbun tui [--addr host:port]              TUI for a remote 'kenbun serve'
+
+  kenbun k8s deploy [--context c] [--image i] [--profiler=false]
+                                               install kenbun + eBPF profiler (kubectl apply)
+  kenbun k8s tui [--context c]                 port-forward and open the TUI
+  kenbun k8s destroy [--context c]             remove everything deploy created
+  kenbun k8s manifests [--image i] [--profiler=false]
+                                               print the manifests instead
 `
 
 func main() {
@@ -68,6 +76,8 @@ func main() {
 		err = runServe(args)
 	case "tui":
 		err = runRemote(args)
+	case "k8s":
+		err = runK8s(args)
 	default:
 		err = fmt.Errorf("unknown command %q\n\n%s", cmd, usage)
 	}
@@ -206,6 +216,49 @@ func runRemote(args []string) error {
 	}
 	log.SetOutput(io.Discard)
 	return runTUI(tui.New(api.NewClient(*addr), tui.Options{}), nil)
+}
+
+func runK8s(args []string) error {
+	if len(args) == 0 {
+		return fmt.Errorf("k8s needs a command\n\n%s", usage)
+	}
+	sub, args := args[0], args[1:]
+	fs := flags("k8s " + sub)
+	var o k8s.Options
+	fs.StringVar(&o.Context, "context", "", "kubeconfig context (default: current)")
+	fs.StringVar(&o.Image, "image", "ghcr.io/adrijh/kenbun:"+version, "kenbun image")
+	fs.BoolVar(&o.Profiler, "profiler", true, "deploy the eBPF profiler DaemonSet (needs nodes in the host PID namespace: not k3d or kind)")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	ctx := context.Background()
+
+	switch sub {
+	case "deploy":
+		if err := k8s.Deploy(ctx, o); err != nil {
+			return err
+		}
+		fmt.Println("\nkenbun is running. Open it with: kenbun k8s tui")
+		return nil
+	case "destroy":
+		return k8s.Destroy(ctx, o)
+	case "manifests":
+		m, err := k8s.Manifests(o)
+		if err != nil {
+			return err
+		}
+		fmt.Print(m)
+		return nil
+	case "tui":
+		addr, stop, err := k8s.PortForward(ctx, o)
+		if err != nil {
+			return err
+		}
+		defer stop()
+		log.SetOutput(io.Discard)
+		return runTUI(tui.New(api.NewClient(addr), tui.Options{}), nil)
+	}
+	return fmt.Errorf("unknown k8s command %q\n\n%s", sub, usage)
 }
 
 // runTUI runs the TUI and, if given, the collector alongside it. The collector

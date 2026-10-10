@@ -10,8 +10,9 @@ import (
 	"github.com/adrijh/kenbun/internal/store"
 )
 
-// skipProcesses are always profiled but never what you're looking for.
-var skipProcesses = map[string]bool{
+// skipExecutables are always profiled but never what you're looking for.
+// Matched on the executable, since service.name may be set by k8s enrichment.
+var skipExecutables = map[string]bool{
 	"otelcol-ebpf-profiler": true,
 	"kenbun":                true,
 }
@@ -29,7 +30,7 @@ func Convert(pd pprofile.Profiles) []store.Sample {
 		attrs := rp.Resource().Attributes()
 
 		process := processKey(attrs)
-		if process == "" || skipProcesses[process] {
+		if process == "" || skipExecutables[strAttr(attrs, "process.executable.name")] {
 			continue // kernel threads (no executable) and kenbun's own plumbing
 		}
 		pid := intAttr(attrs, "process.pid")
@@ -58,13 +59,18 @@ func Convert(pd pprofile.Profiles) []store.Sample {
 	return out
 }
 
-// processKey prefers service.name (set by SDKs or k8sattributes) and falls back
-// to the executable name the eBPF profiler sets.
+// processKey prefers service.name (set by SDKs or the k8s_attributes processor)
+// and falls back to the executable name the eBPF profiler sets.
 func processKey(attrs pcommon.Map) string {
-	for _, k := range []string{"service.name", "process.executable.name"} {
-		if v, ok := attrs.Get(k); ok && v.Str() != "" {
-			return v.Str()
-		}
+	if s := strAttr(attrs, "service.name"); s != "" {
+		return s
+	}
+	return strAttr(attrs, "process.executable.name")
+}
+
+func strAttr(attrs pcommon.Map, key string) string {
+	if v, ok := attrs.Get(key); ok {
+		return v.Str()
 	}
 	return ""
 }

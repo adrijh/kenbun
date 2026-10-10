@@ -117,12 +117,13 @@ func (m model) header() string {
 	}
 
 	var chips []string
-	// The window's end: ticking in green while live, frozen in yellow when paused.
+	// The window's end, as of the latest query: green and moving with each
+	// refresh while live, frozen in yellow when paused.
+	clockS := greenS.Bold(true)
 	if m.paused {
-		chips = append(chips, pauseS.Render(m.at.Local().Format("15:04:05")))
-	} else {
-		chips = append(chips, greenS.Bold(true).Render(time.Now().Format("15:04:05")))
+		clockS = pauseS
 	}
+	chips = append(chips, clockS.Render(m.asOf.Local().Format("15:04:05")))
 	chips = append(chips, dimS.Render("窓 ")+fmtDur(m.window()))
 	if m.diff && m.screen == screenTop {
 		chips = append(chips, redS.Render("差分 Δ "+fmtDur(m.window())))

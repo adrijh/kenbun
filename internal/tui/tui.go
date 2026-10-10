@@ -41,7 +41,6 @@ const (
 
 type (
 	tickMsg  struct{}
-	clockMsg struct{} // redraws the header clock
 	procsMsg struct {
 		gen   int
 		procs []store.ProcStat
@@ -72,6 +71,7 @@ type model struct {
 	win    int // index into windows
 	paused bool
 	at     time.Time // window end while paused
+	asOf   time.Time // window end of the latest query, shown in the header
 	diff   bool
 
 	screen screen
@@ -106,18 +106,14 @@ func New(src Source, o Options) tea.Model {
 	if !o.At.IsZero() {
 		m.paused, m.at = true, o.At
 	}
+	m.asOf = m.end()
 	return m
 }
 
-func (m model) Init() tea.Cmd { return tea.Batch(m.load(), tick(), clock()) }
+func (m model) Init() tea.Cmd { return tea.Batch(m.load(), tick()) }
 
 func tick() tea.Cmd {
 	return tea.Tick(refresh, func(time.Time) tea.Msg { return tickMsg{} })
-}
-
-// clock fires on each wall-clock second.
-func clock() tea.Cmd {
-	return tea.Every(time.Second, func(time.Time) tea.Msg { return clockMsg{} })
 }
 
 func (m model) window() time.Duration { return windows[m.win] }
@@ -132,13 +128,14 @@ func (m model) end() time.Time {
 // reload invalidates in-flight results and queries the current screen.
 func (m model) reload() (model, tea.Cmd) {
 	m.gen++
+	m.asOf = m.end()
 	return m, m.load()
 }
 
 // load queries the source for the current screen off the update loop.
 func (m model) load() tea.Cmd {
 	src, gen, proc := m.src, m.gen, m.proc
-	to := m.end()
+	to := m.asOf
 	from := to.Add(-m.window())
 	if m.screen == screenProcs {
 		return func() tea.Msg {
@@ -189,13 +186,11 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		m.w, m.h = msg.Width, msg.Height
 
-	case clockMsg:
-		return m, clock()
-
 	case tickMsg:
 		if m.paused {
 			return m, tick()
 		}
+		m.asOf = m.end()
 		return m, tea.Batch(m.load(), tick())
 
 	case procsMsg:

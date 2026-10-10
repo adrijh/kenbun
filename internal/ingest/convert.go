@@ -72,12 +72,18 @@ func Convert(pd pprofile.Profiles) []store.Sample {
 }
 
 // processKey prefers service.name (set by SDKs or the k8s_attributes processor)
-// and falls back to the executable name the eBPF profiler sets.
+// and falls back to the executable name the eBPF profiler sets. In k8s it adds
+// the container: k8s_attributes takes service.name from app.kubernetes.io/instance,
+// which Helm sets to the release name on every component of a chart.
 func processKey(attrs pcommon.Map) string {
-	if s := strAttr(attrs, "service.name"); s != "" {
-		return s
+	s := strAttr(attrs, "service.name")
+	if s == "" {
+		return strAttr(attrs, "process.executable.name")
 	}
-	return strAttr(attrs, "process.executable.name")
+	if c := strAttr(attrs, "k8s.container.name"); c != "" && c != s {
+		return s + "/" + c
+	}
+	return s
 }
 
 func strAttr(attrs pcommon.Map, key string) string {

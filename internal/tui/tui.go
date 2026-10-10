@@ -41,6 +41,7 @@ const (
 
 type (
 	tickMsg  struct{}
+	clockMsg struct{} // redraws the header clock
 	procsMsg struct {
 		gen   int
 		procs []store.ProcStat
@@ -108,10 +109,15 @@ func New(src Source, o Options) tea.Model {
 	return m
 }
 
-func (m model) Init() tea.Cmd { return tea.Batch(m.load(), tick()) }
+func (m model) Init() tea.Cmd { return tea.Batch(m.load(), tick(), clock()) }
 
 func tick() tea.Cmd {
 	return tea.Tick(refresh, func(time.Time) tea.Msg { return tickMsg{} })
+}
+
+// clock fires on each wall-clock second.
+func clock() tea.Cmd {
+	return tea.Every(time.Second, func(time.Time) tea.Msg { return clockMsg{} })
 }
 
 func (m model) window() time.Duration { return windows[m.win] }
@@ -182,6 +188,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		m.w, m.h = msg.Width, msg.Height
+
+	case clockMsg:
+		return m, clock()
 
 	case tickMsg:
 		if m.paused {

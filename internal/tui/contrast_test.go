@@ -23,7 +23,6 @@ func TestCellContrast(t *testing.T) {
 		check(coolFg, bg, 4.5)
 	}
 	check(inkHex, greenHex, 7)
-	check(inkHex, carpHex, 7)
 	check(inkHex, fujiHex, 7)
 	check(fujiHex, bgHex, 7)
 	check(violetHex, bgHex, 4.5)

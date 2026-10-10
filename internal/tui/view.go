@@ -20,7 +20,6 @@ const (
 	violetHex = "#938aa9" // springViolet1: secondary text
 	greenHex  = "#98bb6c" // springGreen: live, highlighted frames
 	sealHex   = "#c34043" // autumnRed: the 見聞 seal
-	carpHex   = "#e6c384" // carpYellow: paused, warm
 	selRowHex = "#2d4f67" // waveBlue2: selected table row (Kanagawa's selection)
 )
 
@@ -29,7 +28,7 @@ var (
 	fuji    = lipgloss.Color(fujiHex)
 	crystal = lipgloss.Color("#7e9cd8") // crystalBlue: accents
 	waveRed = lipgloss.Color("#e46876") // keys, hot spots, more CPU
-	carp    = lipgloss.Color(carpHex)
+	carp    = lipgloss.Color("#e6c384") // carpYellow: paused, warm
 	aqua    = lipgloss.Color("#7aa89f") // waveAqua2: cool
 	rule    = lipgloss.Color("#54546d") // sumiInk4
 
@@ -42,11 +41,8 @@ var (
 	ruleS  = lipgloss.NewStyle().Foreground(rule)
 	selS   = lipgloss.NewStyle().Background(lipgloss.Color(selRowHex)).Foreground(fuji).Bold(true)
 	pauseS = lipgloss.NewStyle().Foreground(carp).Bold(true)
-	// Status seals, like the logo's: 生 (as in 生放送, live broadcast) and 止 (stopped).
-	liveSealS  = lipgloss.NewStyle().Background(lipgloss.Color(greenHex)).Foreground(ink).Bold(true)
-	pauseSealS = lipgloss.NewStyle().Background(carp).Foreground(ink).Bold(true)
-	upS        = lipgloss.NewStyle().Foreground(waveRed)
-	downS      = greenS
+	upS    = lipgloss.NewStyle().Foreground(waveRed)
+	downS  = greenS
 )
 
 var screenNames = map[screen][2]string{ // english, japanese
@@ -121,10 +117,11 @@ func (m model) header() string {
 	}
 
 	var chips []string
+	// The window's end: ticking in green while live, frozen in yellow when paused.
 	if m.paused {
-		chips = append(chips, pauseSealS.Render(" 止 ")+" "+pauseS.Render(m.at.Local().Format("15:04:05")))
+		chips = append(chips, pauseS.Render(m.at.Local().Format("15:04:05")))
 	} else {
-		chips = append(chips, liveSealS.Render(" 生 "))
+		chips = append(chips, greenS.Bold(true).Render(time.Now().Format("15:04:05")))
 	}
 	chips = append(chips, dimS.Render("窓 ")+fmtDur(m.window()))
 	if m.diff && m.screen == screenTop {

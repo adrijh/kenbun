@@ -8,13 +8,11 @@ import (
 	"bytes"
 	"context"
 	_ "embed"
-	"errors"
 	"fmt"
 	"io"
 	"os"
 	"os/exec"
 	"regexp"
-	"runtime/debug"
 	"strings"
 	"time"
 )
@@ -27,10 +25,8 @@ var (
 )
 
 const (
-	namespace = "kenbun"
-	// Placeholders in the manifests, replaced by Manifests.
-	kenbunImage   = "image: kenbun:dev"
-	profilerImage = "otel/opentelemetry-collector-ebpf-profiler:0.162.0"
+	namespace   = "kenbun"
+	kenbunImage = "image: kenbun:dev" // placeholder in the manifests, replaced by Manifests
 )
 
 type Options struct {
@@ -45,16 +41,13 @@ func Manifests(o Options) (string, error) {
 	if err != nil || !o.Profiler {
 		return k, err
 	}
-	p, err := profilerManifest()
+	p, err := profilerManifest(o)
 	return k + "---\n" + p, err
 }
 
-func profilerManifest() (string, error) {
-	v, err := collectorVersion()
-	if err != nil {
-		return "", err
-	}
-	return replace(profilerYAML, profilerImage, "otel/opentelemetry-collector-ebpf-profiler:"+v)
+// The profiler DaemonSet runs `kenbun agent` from the same image.
+func profilerManifest(o Options) (string, error) {
+	return replace(profilerYAML, kenbunImage, "image: "+o.Image)
 }
 
 func replace(s, old, new string) (string, error) {
@@ -62,20 +55,6 @@ func replace(s, old, new string) (string, error) {
 		return "", fmt.Errorf("manifest placeholder %q not found", old)
 	}
 	return strings.ReplaceAll(s, old, new), nil
-}
-
-// collectorVersion is the otelcol module version compiled into kenbun. The
-// profiler must match it: the profiles proto is Alpha and breaks between releases.
-func collectorVersion() (string, error) {
-	bi, ok := debug.ReadBuildInfo()
-	if ok {
-		for _, d := range bi.Deps {
-			if d.Path == "go.opentelemetry.io/collector/otelcol" {
-				return strings.TrimPrefix(d.Version, "v"), nil
-			}
-		}
-	}
-	return "", errors.New("collector version not found in build info")
 }
 
 func Deploy(ctx context.Context, o Options) error {
@@ -87,7 +66,7 @@ func Deploy(ctx context.Context, o Options) error {
 		return err
 	}
 	if !o.Profiler { // apply doesn't prune: remove one left by an earlier deploy
-		p, err := profilerManifest()
+		p, err := profilerManifest(o)
 		if err != nil {
 			return err
 		}

@@ -25,9 +25,11 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"github.com/charmbracelet/colorprofile"
 	"github.com/open-telemetry/opentelemetry-collector-contrib/exporter/fileexporter"
+	"github.com/open-telemetry/opentelemetry-collector-contrib/processor/k8sattributesprocessor"
 	"go.opentelemetry.io/collector/component"
 	"go.opentelemetry.io/collector/confmap"
 	"go.opentelemetry.io/collector/confmap/provider/yamlprovider"
+	"go.opentelemetry.io/collector/exporter/otlpexporter"
 	"go.opentelemetry.io/collector/extension"
 	"go.opentelemetry.io/collector/featuregate"
 	"go.opentelemetry.io/collector/otelcol"
@@ -47,6 +49,9 @@ import (
 //go:embed otel.yaml
 var baseConfig string
 
+//go:embed agent.yaml
+var agentConfig string
+
 // version is set by the Makefile (-ldflags "-X main.version=...") and is also
 // the image tag `kenbun k8s deploy` uses by default.
 var version = "dev"
@@ -60,6 +65,8 @@ const usage = `kenbun: OTLP profiles in your terminal
   kenbun view file.jsonl                     show a capture (from --dump) offline
   kenbun serve [--otlp addr] [--http addr]   receive profiles and serve the HTTP API
   kenbun tui [--addr host:port]              TUI for a remote 'kenbun serve'
+  kenbun agent [--to host:port]              eBPF profiler on a k8s node, pushing to kenbun
+                                             (the DaemonSet 'k8s deploy' creates)
 
   kenbun k8s deploy [--context c] [--image i] [--profiler=false]
                                                install kenbun + eBPF profiler (kubectl apply)
@@ -84,6 +91,8 @@ func main() {
 		err = runServe(args)
 	case "tui":
 		err = runRemote(args)
+	case "agent":
+		err = runAgent(args)
 	case "k8s":
 		err = runK8s(args)
 	default:
@@ -142,7 +151,11 @@ func runLocal(args []string) error {
 	defer cancel()
 	go prune(ctx, st)
 
-	col, err := newCollector(st, *otlp, *dump, logPath, *profile)
+	uris, err := localConfig(*otlp, *dump, logPath, *profile)
+	if err != nil {
+		return err
+	}
+	col, err := newCollector(st, uris)
 	if err != nil {
 		return err
 	}
@@ -205,7 +218,11 @@ func runServe(args []string) error {
 	defer cancel()
 	go prune(ctx, st)
 
-	col, err := newCollector(st, *otlp, *dump, "", false) // logs to stderr
+	uris, err := localConfig(*otlp, *dump, "", false) // logs to stderr
+	if err != nil {
+		return err
+	}
+	col, err := newCollector(st, uris)
 	if err != nil {
 		return err
 	}
@@ -236,6 +253,24 @@ func runRemote(args []string) error {
 	}
 	log.SetOutput(io.Discard)
 	return runTUI(tui.New(api.NewClient(*addr), tui.Options{}), nil)
+}
+
+func runAgent(args []string) error {
+	fs := flags("agent")
+	to := fs.String("to", "kenbun.kenbun.svc:4317", "kenbun's OTLP gRPC address")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if runtime.GOOS != "linux" {
+		return errors.New("agent uses eBPF and only works on Linux")
+	}
+	uris := append([]string{"yaml:" + agentConfig}, profilerConfig...)
+	uris = append(uris, "yaml:exporters::otlp_grpc::endpoint: "+strconv.Quote(*to))
+	col, err := newCollector(nil, uris) // no store: the agent only forwards
+	if err != nil {
+		return err
+	}
+	return col.Run(context.Background()) // returns on SIGINT/SIGTERM
 }
 
 func runK8s(args []string) error {
@@ -322,11 +357,17 @@ func runTUI(m tea.Model, col *otelcol.Collector) error {
 	return err
 }
 
-func newCollector(st *store.Store, otlp, dump, logPath string, profile bool) (*otelcol.Collector, error) {
-	if err := featuregate.GlobalRegistry().Set("service.profilesSupport", true); err != nil {
-		return nil, err
-	}
+// profilerConfig is the eBPF profiler setup shared by --profile and the agent.
+var profilerConfig = []string{
+	fmt.Sprintf("yaml:receivers::profiling::samples_per_second: %d", store.SamplesPerSecond),
+	// Off-CPU time, so the LOOP view sees callbacks blocking in sleep or I/O.
+	fmt.Sprintf("yaml:extensions::offcpu::threshold: %g", store.OffCPUThreshold),
+	"yaml:receivers::profiling::probes: [offcpu]",
+	"yaml:service::extensions: [offcpu]",
+}
 
+// localConfig is the collector config of kenbun itself (TUI and serve).
+func localConfig(otlp, dump, logPath string, profile bool) ([]string, error) {
 	// Later URIs override earlier ones; lists are replaced, not merged.
 	uris := []string{
 		"yaml:" + baseConfig,
@@ -342,14 +383,8 @@ func newCollector(st *store.Store, otlp, dump, logPath string, profile bool) (*o
 		)
 	}
 	if profile {
-		uris = append(uris,
-			fmt.Sprintf("yaml:receivers::profiling::samples_per_second: %d", store.SamplesPerSecond),
-			// Off-CPU time, so the LOOP view sees callbacks blocking in sleep or I/O.
-			fmt.Sprintf("yaml:extensions::offcpu::threshold: %g", store.OffCPUThreshold),
-			"yaml:receivers::profiling::probes: [offcpu]",
-			"yaml:service::extensions: [offcpu]",
-			"yaml:service::pipelines::profiles::receivers: [otlp, profiling]",
-		)
+		uris = append(uris, profilerConfig...)
+		uris = append(uris, "yaml:service::pipelines::profiles::receivers: [otlp, profiling]")
 	}
 	if logPath != "" {
 		q := "[" + strconv.Quote(logPath) + "]"
@@ -357,6 +392,14 @@ func newCollector(st *store.Store, otlp, dump, logPath string, profile bool) (*o
 			"yaml:service::telemetry::logs::output_paths: "+q,
 			"yaml:service::telemetry::logs::error_output_paths: "+q,
 		)
+	}
+	return uris, nil
+}
+
+// newCollector registers every component kenbun uses; uris pick the pipeline.
+func newCollector(st *store.Store, uris []string) (*otelcol.Collector, error) {
+	if err := featuregate.GlobalRegistry().Set("service.profilesSupport", true); err != nil {
+		return nil, err
 	}
 
 	return otelcol.NewCollector(otelcol.CollectorSettings{
@@ -371,7 +414,11 @@ func newCollector(st *store.Store, otlp, dump, logPath string, profile bool) (*o
 			if err != nil {
 				return otelcol.Factories{}, err
 			}
-			exporters, err := otelcol.MakeFactoryMap(ingest.NewFactory(st), fileexporter.NewFactory())
+			exporters, err := otelcol.MakeFactoryMap(ingest.NewFactory(st), fileexporter.NewFactory(), otlpexporter.NewFactory())
+			if err != nil {
+				return otelcol.Factories{}, err
+			}
+			processors, err := otelcol.MakeFactoryMap(k8sattributesprocessor.NewFactory())
 			if err != nil {
 				return otelcol.Factories{}, err
 			}
@@ -382,6 +429,7 @@ func newCollector(st *store.Store, otlp, dump, logPath string, profile bool) (*o
 			return otelcol.Factories{
 				Receivers:  receivers,
 				Exporters:  exporters,
+				Processors: processors,
 				Extensions: extensions,
 				Telemetry:  otelconftelemetry.NewFactory(),
 			}, nil

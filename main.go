@@ -3,6 +3,7 @@
 package main
 
 import (
+	"cmp"
 	"context"
 	_ "embed"
 	"errors"
@@ -15,12 +16,14 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"syscall"
 	"time"
 
 	tea "charm.land/bubbletea/v2"
+	"github.com/charmbracelet/colorprofile"
 	"github.com/open-telemetry/opentelemetry-collector-contrib/exporter/fileexporter"
 	"go.opentelemetry.io/collector/component"
 	"go.opentelemetry.io/collector/confmap"
@@ -29,6 +32,7 @@ import (
 	"go.opentelemetry.io/collector/otelcol"
 	"go.opentelemetry.io/collector/receiver/otlpreceiver"
 	"go.opentelemetry.io/collector/service/telemetry/otelconftelemetry"
+	profiler "go.opentelemetry.io/ebpf-profiler/collector"
 
 	"github.com/adrijh/kenbun/internal/api"
 	"github.com/adrijh/kenbun/internal/ingest"
@@ -41,14 +45,16 @@ import (
 //go:embed otel.yaml
 var baseConfig string
 
-const (
-	version   = "0.3.0"
-	retention = 30 * time.Minute // largest TUI window (15m) plus its diff baseline
-)
+// version is set by the Makefile (-ldflags "-X main.version=...") and is also
+// the image tag `kenbun k8s deploy` uses by default.
+var version = "dev"
+
+const retention = 30 * time.Minute // largest TUI window (15m) plus its diff baseline
 
 const usage = `kenbun: OTLP profiles in your terminal
 
   kenbun [--otlp addr] [--dump file.jsonl]   receive profiles and show the TUI
+         [--profile]                         also profile this machine (embedded eBPF profiler, Linux, root)
   kenbun view file.jsonl                     show a capture (from --dump) offline
   kenbun serve [--otlp addr] [--http addr]   receive profiles and serve the HTTP API
   kenbun tui [--addr host:port]              TUI for a remote 'kenbun serve'
@@ -100,8 +106,17 @@ func runLocal(args []string) error {
 	fs := flags("kenbun")
 	otlp := fs.String("otlp", "localhost:4317", "OTLP gRPC listen address")
 	dump := fs.String("dump", "", "also write received profiles to this JSONL file")
+	profile := fs.Bool("profile", false, "also profile this machine with the embedded eBPF profiler (Linux, needs root)")
 	if err := fs.Parse(args); err != nil {
 		return err
+	}
+	if *profile && runtime.GOOS != "linux" {
+		return errors.New("--profile uses eBPF and only works on Linux")
+	}
+	explicit := false
+	fs.Visit(func(f *flag.Flag) { explicit = explicit || f.Name == "otlp" })
+	if !explicit {
+		*otlp = freeAddr(*otlp)
 	}
 
 	// The TUI owns the terminal, so logs (ours and the collector's) go to a file.
@@ -125,11 +140,14 @@ func runLocal(args []string) error {
 	defer cancel()
 	go prune(ctx, st)
 
-	col, err := newCollector(st, *otlp, *dump, logPath)
+	col, err := newCollector(st, *otlp, *dump, logPath, *profile)
 	if err != nil {
 		return err
 	}
-	if err := runTUI(tui.New(st, tui.Options{}), col); err != nil {
+	if err := runTUI(tui.New(st, tui.Options{OTLP: *otlp}), col); err != nil {
+		if strings.Contains(err.Error(), `"profiling" receiver`) && os.Geteuid() != 0 {
+			err = fmt.Errorf("%w\n--profile loads eBPF programs and needs root: sudo kenbun --profile", err)
+		}
 		return fmt.Errorf("%w (log: %s)", err, logPath)
 	}
 	return nil
@@ -185,7 +203,7 @@ func runServe(args []string) error {
 	defer cancel()
 	go prune(ctx, st)
 
-	col, err := newCollector(st, *otlp, *dump, "") // logs to stderr
+	col, err := newCollector(st, *otlp, *dump, "", false) // logs to stderr
 	if err != nil {
 		return err
 	}
@@ -265,7 +283,7 @@ func runK8s(args []string) error {
 // stops when the TUI quits; if it stops first (bad config, port in use,
 // SIGTERM), it takes the TUI down with it.
 func runTUI(m tea.Model, col *otelcol.Collector) error {
-	p := tea.NewProgram(m)
+	p := tea.NewProgram(m, tea.WithColorProfile(colorProfile()))
 
 	// The collector traps SIGHUP (config reload), so without this closing the
 	// terminal would leave kenbun running headless and holding the OTLP port.
@@ -279,6 +297,15 @@ func runTUI(m tea.Model, col *otelcol.Collector) error {
 			colErr <- col.Run(context.Background())
 			p.Quit()
 		}()
+		// Open the TUI only once the collector runs, so startup errors (port in
+		// use, no eBPF permissions) print to a normal terminal.
+		for col.GetState() != otelcol.StateRunning {
+			select {
+			case err := <-colErr:
+				return fmt.Errorf("collector: %w", cmp.Or(err, errors.New("stopped during startup")))
+			case <-time.After(10 * time.Millisecond):
+			}
+		}
 	} else {
 		colErr <- nil
 	}
@@ -293,7 +320,7 @@ func runTUI(m tea.Model, col *otelcol.Collector) error {
 	return err
 }
 
-func newCollector(st *store.Store, otlp, dump, logPath string) (*otelcol.Collector, error) {
+func newCollector(st *store.Store, otlp, dump, logPath string, profile bool) (*otelcol.Collector, error) {
 	if err := featuregate.GlobalRegistry().Set("service.profilesSupport", true); err != nil {
 		return nil, err
 	}
@@ -312,6 +339,12 @@ func newCollector(st *store.Store, otlp, dump, logPath string) (*otelcol.Collect
 			"yaml:service::pipelines::profiles::exporters: [kenbun, file/dump]",
 		)
 	}
+	if profile {
+		uris = append(uris,
+			"yaml:receivers::profiling::samples_per_second: 97", // prime: avoids lockstep with periodic work
+			"yaml:service::pipelines::profiles::receivers: [otlp, profiling]",
+		)
+	}
 	if logPath != "" {
 		q := "[" + strconv.Quote(logPath) + "]"
 		uris = append(uris,
@@ -327,7 +360,8 @@ func newCollector(st *store.Store, otlp, dump, logPath string) (*otelcol.Collect
 			Version:     version,
 		},
 		Factories: func() (otelcol.Factories, error) {
-			receivers, err := otelcol.MakeFactoryMap(otlpreceiver.NewFactory())
+			// The profiling receiver builds everywhere but only starts on Linux.
+			receivers, err := otelcol.MakeFactoryMap(otlpreceiver.NewFactory(), profiler.NewFactory())
 			if err != nil {
 				return otelcol.Factories{}, err
 			}
@@ -348,6 +382,36 @@ func newCollector(st *store.Store, otlp, dump, logPath string) (*otelcol.Collect
 			},
 		},
 	})
+}
+
+// colorProfile trusts truecolor whenever detection only finds 256 colors: that
+// is what tmux (TERM=tmux-256color) and sudo (which drops COLORTERM) look like,
+// on terminals that do support it. Bubble Tea would upgrade later from a
+// terminal reply, but in tmux that reply is only read on the next keypress,
+// so the first frames came out in the theme's 256-color approximations.
+// Terminal.app is the one common terminal without truecolor.
+func colorProfile() colorprofile.Profile {
+	p := colorprofile.Detect(os.Stdout, os.Environ())
+	if p == colorprofile.ANSI256 && os.Getenv("TERM_PROGRAM") != "Apple_Terminal" {
+		return colorprofile.TrueColor
+	}
+	return p
+}
+
+// freeAddr returns addr if it can be listened on, otherwise a free port on the
+// same host, so a local kenbun starts even when another collector holds 4317.
+func freeAddr(addr string) string {
+	ln, err := net.Listen("tcp", addr)
+	if err == nil {
+		ln.Close()
+		return addr
+	}
+	host, _, _ := net.SplitHostPort(addr)
+	if ln, err = net.Listen("tcp", net.JoinHostPort(host, "0")); err != nil {
+		return addr // let the collector report the original error
+	}
+	defer ln.Close()
+	return ln.Addr().String()
 }
 
 // logFile is $XDG_STATE_HOME/kenbun/kenbun.log (default ~/.local/state).

@@ -2,6 +2,7 @@ package tui
 
 import (
 	"fmt"
+	"math"
 	"strings"
 	"time"
 
@@ -9,26 +10,67 @@ import (
 	"charm.land/lipgloss/v2"
 )
 
-var (
-	bold     = lipgloss.NewStyle().Bold(true)
-	faint    = lipgloss.NewStyle().Faint(true)
-	selected = lipgloss.NewStyle().Reverse(true)
-	worse    = lipgloss.NewStyle().Foreground(lipgloss.Color("#e05d5d"))
-	better   = lipgloss.NewStyle().Foreground(lipgloss.Color("#5dbb63"))
+// Theme: Kanagawa (Hokusai's Great Wave), the common dark terminal theme, so
+// kenbun sits in it naturally. The terminal's own background is kept; contrast
+// is checked against Kanagawa's (contrast_test.go).
+const (
+	bgHex     = "#1f1f28" // sumiInk1: the background contrast is checked against
+	inkHex    = "#16161d" // sumiInk0: text on light cells
+	fujiHex   = "#dcd7ba" // fujiWhite: body text, selected flame frame
+	violetHex = "#938aa9" // springViolet1: secondary text
+	greenHex  = "#98bb6c" // springGreen: live, highlighted frames
+	sealHex   = "#c34043" // autumnRed: the 見聞 seal
+	selRowHex = "#2d4f67" // waveBlue2: selected table row (Kanagawa's selection)
 )
 
-var help = map[screen]string{
-	screenProcs: "↑↓ move · enter open · w window · p pause · q quit",
-	screenTop:   "↑↓ move · enter flamegraph at function · tab flamegraph · d diff · w window · p pause · esc back",
-	screenFlame: "←↑↓→ move · enter zoom · / search · tab top · w window · p pause · esc back",
+var (
+	ink     = lipgloss.Color(inkHex)
+	fuji    = lipgloss.Color(fujiHex)
+	crystal = lipgloss.Color("#7e9cd8") // crystalBlue: accents
+	waveRed = lipgloss.Color("#e46876") // keys, hot spots, more CPU
+	carp    = lipgloss.Color("#e6c384") // carpYellow: paused, warm
+	aqua    = lipgloss.Color("#7aa89f") // waveAqua2: cool
+	rule    = lipgloss.Color("#54546d") // sumiInk4
+
+	logoS  = lipgloss.NewStyle().Background(lipgloss.Color(sealHex)).Foreground(fuji).Bold(true)
+	redS   = lipgloss.NewStyle().Foreground(waveRed).Bold(true)
+	accS   = lipgloss.NewStyle().Foreground(crystal)
+	greenS = lipgloss.NewStyle().Foreground(lipgloss.Color(greenHex))
+	boldS  = lipgloss.NewStyle().Bold(true)
+	dimS   = lipgloss.NewStyle().Foreground(lipgloss.Color(violetHex))
+	ruleS  = lipgloss.NewStyle().Foreground(rule)
+	selS   = lipgloss.NewStyle().Background(lipgloss.Color(selRowHex)).Foreground(fuji).Bold(true)
+	pauseS = lipgloss.NewStyle().Foreground(carp).Bold(true)
+	upS    = lipgloss.NewStyle().Foreground(waveRed)
+	downS  = greenS
+)
+
+var screenNames = map[screen][2]string{ // english, japanese
+	screenProcs: {"PROCS", "プロセス"},
+	screenTop:   {"FUNCTIONS", "関数"},
+	screenFlame: {"FLAME", "炎"},
+}
+
+var keys = map[screen][][2]string{
+	screenProcs: {{"↑↓", "move"}, {"enter", "open"}, {"w", "window"}, {"p", "pause"}, {"q", "quit"}},
+	screenTop:   {{"↑↓", "move"}, {"enter", "show in flame"}, {"tab", "flame"}, {"d", "diff"}, {"w", "window"}, {"p", "pause"}, {"esc", "back"}},
+	screenFlame: {{"←↑↓→", "move"}, {"enter", "zoom"}, {"esc", "zoom out/back"}, {"/", "search"}, {"tab", "functions"}, {"w", "window"}, {"p", "pause"}},
+}
+
+func (m model) width() int {
+	if m.w == 0 {
+		return 100
+	}
+	return m.w
 }
 
 func (m model) View() tea.View {
 	var b strings.Builder
-	b.WriteString(bold.Render(m.clip(m.header(), 0)) + "\n\n")
+	b.WriteString(m.header() + "\n")
+	b.WriteString(ruleS.Render(strings.Repeat("━", m.width())) + "\n")
 	rows := 20
 	if m.h > 0 {
-		rows = max(1, m.h-4) // header, blank, error/blank, help
+		rows = max(1, m.h-4) // header, rule, error, footer
 	}
 
 	switch m.screen {
@@ -40,35 +82,73 @@ func (m model) View() tea.View {
 		m.viewFlame(&b, rows)
 	}
 
-	// Pin the help line to the bottom.
+	// Pin error and footer to the bottom.
 	if pad := m.h - 2 - strings.Count(b.String(), "\n"); pad > 0 {
 		b.WriteString(strings.Repeat("\n", pad))
 	}
 	if m.err != nil {
-		b.WriteString(worse.Render(m.clip("error: "+m.err.Error(), 0)))
+		b.WriteString(upS.Render(m.clip("✗ エラー "+m.err.Error(), 0)))
 	}
-	b.WriteString("\n" + faint.Render(m.clip(help[m.screen], 0)))
+	b.WriteString("\n" + m.footer())
 
 	v := tea.NewView(b.String())
 	v.AltScreen = true
+	v.WindowTitle = "見聞 kenbun"
 	return v
 }
 
+// header: logo and breadcrumbs on the left, status chips on the right.
 func (m model) header() string {
-	parts := []string{"kenbun"}
+	left := logoS.Render(" 見聞 ") + redS.Render(" KENBUN ") + dimS.Render("// ")
+	crumb := func(s screen) string {
+		n := screenNames[s]
+		if s == m.screen {
+			return accS.Bold(true).Render(n[0]) + " " + dimS.Render(n[1])
+		}
+		return dimS.Render(n[0])
+	}
+	left += crumb(screenProcs)
 	if m.screen != screenProcs {
-		parts = append(parts, m.proc)
+		left += dimS.Render(" ❯ ") + boldS.Render(m.proc) + dimS.Render(" ❯ ") + crumb(m.screen)
 	}
-	parts = append(parts, "last "+fmtDur(m.window()))
+
+	var chips []string
 	if m.paused {
-		parts = append(parts, "PAUSED at "+m.at.Local().Format("15:04:05"))
+		chips = append(chips, pauseS.Render("❚❚ 停止 "+m.at.Local().Format("15:04:05")))
 	} else {
-		parts = append(parts, "live")
+		chips = append(chips, greenS.Bold(true).Render("● LIVE"))
 	}
+	chips = append(chips, dimS.Render("窓 ")+fmtDur(m.window()))
 	if m.diff && m.screen == screenTop {
-		parts = append(parts, "diff vs previous "+fmtDur(m.window()))
+		chips = append(chips, redS.Render("差分 Δ "+fmtDur(m.window())))
 	}
-	return strings.Join(parts, " · ")
+	if m.otlp != "" {
+		chips = append(chips, dimS.Render("受信 ")+m.otlp)
+	}
+
+	// Drop chips from the right until everything fits.
+	for len(chips) > 0 {
+		right := strings.Join(chips, ruleS.Render(" ┃ "))
+		if gap := m.width() - lipgloss.Width(left) - lipgloss.Width(right); gap >= 2 {
+			return left + strings.Repeat(" ", gap) + right
+		}
+		chips = chips[:len(chips)-1]
+	}
+	return left
+}
+
+func (m model) footer() string {
+	var parts []string
+	used := 0
+	for _, k := range keys[m.screen] {
+		w := lipgloss.Width(k[0]) + 1 + lipgloss.Width(k[1]) + 3
+		if used+w > m.width() {
+			break
+		}
+		used += w
+		parts = append(parts, redS.Render(k[0])+" "+dimS.Render(k[1]))
+	}
+	return strings.Join(parts, "   ")
 }
 
 func fmtDur(d time.Duration) string {
@@ -80,77 +160,131 @@ func fmtDur(d time.Duration) string {
 
 func (m model) viewProcs(b *strings.Builder, rows int) {
 	if len(m.procs) == 0 {
-		b.WriteString("no profiles in window (OTLP on :4317)\n")
+		b.WriteString(dimS.Render("  受信待機中 ") + "awaiting profiles" + redS.Render(" ▌") + "\n")
 		return
 	}
 	var all int64
+	nameW := 12
 	for _, p := range m.procs {
 		all += p.Weight
+		nameW = max(nameW, len([]rune(p.Name)))
 	}
-	fmt.Fprintf(b, "%8s %6s  %s\n", "SAMPLES", "%", "PROCESS")
+	nameW = min(nameW, 40)
+	barW := max(0, min(32, m.width()-nameW-24))
+
+	b.WriteString(dimS.Render(fmt.Sprintf("  %-*s %8s %7s  %s", nameW, "PROCESS", "SAMPLES", "SHARE", "")) + "\n")
 	rows--
 	start := max(0, m.pcur-rows+1)
 	for i := start; i < min(len(m.procs), start+rows); i++ {
 		p := m.procs[i]
-		line := m.clip(fmt.Sprintf("%8d %6.1f  %s", p.Weight, pct(p.Weight, all), p.Name), 0)
+		share := pct(p.Weight, all)
+		cols := fmt.Sprintf("%-*s %8d %6.1f%%  ", nameW, fit(p.Name, nameW), p.Weight, share)
+		bar := bar(share/100, barW)
 		if i == m.pcur {
-			line = selected.Render(line)
+			b.WriteString(selS.Render("▶ "+cols+bar) + "\n")
+			continue
 		}
-		b.WriteString(line + "\n")
+		b.WriteString("  " + cols + heat(share).Render(bar) + "\n")
 	}
 }
 
 func (m model) viewTop(b *strings.Builder, rows int) {
+	if len(m.top) == 0 {
+		b.WriteString(dimS.Render("  no samples in window") + "\n")
+		return
+	}
 	var total int64
 	if m.tree != nil {
 		total = m.tree.Total
 	}
-	if len(m.top) == 0 {
-		b.WriteString("no samples in window\n")
-		return
-	}
 	diff := m.diff && m.prev != nil
+	const barW = 24
+
+	head := fmt.Sprintf("  %6s %7s ", "SELF", "TOTAL")
 	if diff {
-		fmt.Fprintf(b, "%6s %7s %7s %7s  %s\n", "SELF%", "TOTAL%", "ΔSELF", "ΔTOTAL", "FUNCTION")
-	} else {
-		fmt.Fprintf(b, "%6s %7s  %s\n", "SELF%", "TOTAL%", "FUNCTION")
+		head += fmt.Sprintf("%8s %8s ", "ΔSELF", "ΔTOTAL")
 	}
+	head += fmt.Sprintf(" %-*s  FUNCTION", barW, "█ self ░ total")
+	b.WriteString(dimS.Render(head) + "\n")
 	rows--
+
+	nameW := max(8, m.width()-lipgloss.Width(head)+len("FUNCTION"))
 	start := max(0, m.tcur-rows+1)
 	for i := start; i < min(len(m.top), start+rows); i++ {
 		f := m.top[i]
 		self, tot := pct(f.Self, total), pct(f.Total, total)
 		isSel := i == m.tcur
 
-		var line string
+		var deltas string
 		if diff {
 			p := m.prev[f.Name]
-			ds := m.delta(self-pct(p.Self, m.prevN), isSel)
-			dt := m.delta(tot-pct(p.Total, m.prevN), isSel)
-			line = fmt.Sprintf("%6.1f %7.1f %s %s  %s", self, tot, ds, dt, m.clip(f.Name, 32))
-		} else {
-			line = fmt.Sprintf("%6.1f %7.1f  %s", self, tot, m.clip(f.Name, 16))
+			deltas = m.delta(self-pct(p.Self, m.prevN), isSel) + " " + m.delta(tot-pct(p.Total, m.prevN), isSel) + " "
 		}
+		solid, shade := splitBar(self/100, tot/100, barW)
+		name := fit(f.Name, nameW)
+		cols := fmt.Sprintf("%5.1f%% %6.1f%% ", self, tot)
+
 		if isSel {
-			line = selected.Render(line)
+			b.WriteString(selS.Render("▶ "+cols+deltas+" "+solid+shade+"  "+name) + "\n")
+			continue
 		}
-		b.WriteString(line + "\n")
+		nameS := lipgloss.NewStyle()
+		if strings.HasPrefix(f.Name, "[") { // native frames: context, rarely the culprit
+			nameS = dimS
+		}
+		b.WriteString("  " + cols + deltas + " " + heat(self).Render(solid) + ruleS.Render(shade) + "  " + nameS.Render(name) + "\n")
 	}
 }
 
-// delta formats a change in percentage points; red = more CPU than before.
+// delta formats a change in percentage points: ▲ pink = more CPU than before.
 func (m model) delta(d float64, plain bool) string {
-	s := fmt.Sprintf("%+7.1f", d)
-	switch {
-	case m.prevN == 0:
-		return fmt.Sprintf("%7s", "-")
-	case plain || (d > -0.05 && d < 0.05):
-		return s
-	case d > 0:
-		return worse.Render(s)
-	default:
-		return better.Render(s)
+	if m.prevN == 0 { // nothing in the previous window to compare with
+		return dimS.Render(fmt.Sprintf("%8s", "– "))
 	}
+	arrow, st := "▲", upS
+	switch {
+	case math.Abs(d) < 0.05:
+		arrow, st = "·", dimS
+		d = 0
+	case d < 0:
+		arrow, st = "▼", downS
+	}
+	s := fmt.Sprintf("%s %+5.1f ", arrow, d)
+	if plain {
+		return s
+	}
+	return st.Render(s)
+}
+
+// heat colors by share: aqua when small, yellow, then red when it dominates.
+func heat(p float64) lipgloss.Style {
+	switch {
+	case p >= 40:
+		return upS
+	case p >= 10:
+		return lipgloss.NewStyle().Foreground(carp)
+	default:
+		return lipgloss.NewStyle().Foreground(aqua)
+	}
+}
+
+var eighths = []string{"", "▏", "▎", "▍", "▌", "▋", "▊", "▉"}
+
+// bar draws frac (0..1) of w columns with eighth-block precision, padded to w.
+func bar(frac float64, w int) string {
+	n := int(math.Round(max(0, min(1, frac)) * float64(w*8)))
+	s := strings.Repeat("█", n/8) + eighths[n%8]
+	return s + strings.Repeat(" ", w-len([]rune(s)))
+}
+
+// splitBar draws total as a bar whose first (self) part is solid, padded to w.
+func splitBar(self, total float64, w int) (solid, shade string) {
+	s := int(math.Round(max(0, min(1, self)) * float64(w)))
+	t := max(s, int(math.Round(max(0, min(1, total))*float64(w))))
+	if s == 0 && self > 0 {
+		s, t = 1, max(t, 1) // keep tiny self visible
+	}
+	return strings.Repeat("█", s), strings.Repeat("░", t-s) + strings.Repeat(" ", w-t)
 }
 
 // clip keeps a line within the terminal width (indent = columns before s).

@@ -5,7 +5,6 @@ package tui
 
 import (
 	"context"
-	"strings"
 	"time"
 
 	tea "charm.land/bubbletea/v2"
@@ -22,6 +21,7 @@ type Source interface {
 type Options struct {
 	At     time.Time     // non-zero: start paused with the window ending here (offline files)
 	Window time.Duration // initial window, rounded up to a preset; 0 = 1m
+	OTLP   string        // where this process receives OTLP, if it does
 }
 
 var windows = []time.Duration{30 * time.Second, time.Minute, 5 * time.Minute, 15 * time.Minute}
@@ -54,6 +54,7 @@ type (
 
 type model struct {
 	src  Source
+	otlp string
 	w, h int
 	err  error
 	gen  int // bumped whenever query parameters change; older results are dropped
@@ -76,15 +77,17 @@ type model struct {
 
 	// Flamegraph state is kept as frame names from the root so it survives
 	// refreshes, which rebuild the tree.
-	focus     []string // zoomed-in node
-	sel       []string // selected node (always inside focus)
+	focus     []string   // zoomed-in node
+	zooms     [][]string // earlier focuses, undone by esc
+	sel       []string   // selected node (always inside focus)
 	search    string
 	searching bool   // typing the search query
+	exact     bool   // search is a function picked in the table, matched exactly
 	jump      string // function to select once the tree arrives (from the top table)
 }
 
 func New(src Source, o Options) tea.Model {
-	m := model{src: src, win: 1}
+	m := model{src: src, win: 1, otlp: o.OTLP}
 	for o.Window > 0 && m.win < len(windows)-1 && windows[m.win] < o.Window {
 		m.win++
 	}
@@ -239,7 +242,7 @@ func (m model) key(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			if m.pcur < len(m.procs) {
 				m.screen, m.proc = screenTop, m.procs[m.pcur].Name
 				m.top, m.tree, m.tcur = nil, nil, 0
-				m.focus, m.sel, m.search = nil, nil, ""
+				m.focus, m.zooms, m.sel, m.search = nil, nil, nil, ""
 				return m.reload()
 			}
 		}
@@ -255,8 +258,9 @@ func (m model) key(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			return m.reload()
 		case "enter":
 			if m.tcur < len(m.top) {
+				// Highlight every occurrence: the table row adds up all of them.
 				name := m.top[m.tcur].Name
-				m.screen, m.search, m.focus, m.jump = screenFlame, name, nil, name
+				m.screen, m.search, m.exact, m.focus, m.zooms, m.jump = screenFlame, name, true, nil, nil, name
 				return m.reload()
 			}
 		case "esc", "backspace":
@@ -274,8 +278,7 @@ func (m model) searchKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "enter":
 		m.searching = false
-		q := strings.ToLower(m.search)
-		m.selectFirst(func(n string) bool { return matches(n, q) })
+		m.selectFirst(m.highlighted)
 	case "esc":
 		m.searching, m.search = false, ""
 	case "backspace":

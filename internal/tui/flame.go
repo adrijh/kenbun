@@ -16,17 +16,28 @@ import (
 // Icicle layout: the zoomed-in node spans the full width on the first row,
 // children below it, each as wide as its share of the parent.
 
+// Cells use Kanagawa's autumn tones with dark text, native frames a muted ink
+// with light text; the selection is fujiWhite, highlights springGreen
+// (contrast_test.go keeps every pairing readable). Hue says what a frame is.
 var (
-	warm   = palette("#e8a33d", "#d9822b", "#e07a5f", "#e0c341", "#d4a373", "#cc7a00") // symbolized
-	cool   = palette("#7f9cb3", "#6c8ebf", "#8fa8c8", "#91a7a0")                       // [native] frames
-	hit    = lipgloss.NewStyle().Background(lipgloss.Color("#d33682")).Foreground(lipgloss.Color("#ffffff"))
-	picked = lipgloss.NewStyle().Background(lipgloss.Color("#ffffff")).Foreground(lipgloss.Color("#000000")).Bold(true)
+	warmHex = []string{"#ffa066", "#dca561", "#e6c384", "#e46876", "#d27e99"} // symbolized: surimiOrange, autumnYellow, carpYellow, waveRed, sakuraPink
+	coolHex = []string{"#54546d", "#4a4a60"}                                  // [native]: sumiInk4 shades, recede
+	warmFg  = inkHex
+	coolFg  = fujiHex
+
+	warm, cool = palette(warmHex, warmFg), palette(coolHex, coolFg)
+	hit        = cellStyle(greenHex, inkHex)
+	picked     = cellStyle(fujiHex, inkHex).Bold(true)
 )
 
-func palette(colors ...string) []lipgloss.Style {
-	out := make([]lipgloss.Style, len(colors))
-	for i, c := range colors {
-		out[i] = lipgloss.NewStyle().Background(lipgloss.Color(c)).Foreground(lipgloss.Color("#000000"))
+func cellStyle(bg, fg string) lipgloss.Style {
+	return lipgloss.NewStyle().Background(lipgloss.Color(bg)).Foreground(lipgloss.Color(fg))
+}
+
+func palette(bgs []string, fg string) []lipgloss.Style {
+	out := make([]lipgloss.Style, len(bgs))
+	for i, bg := range bgs {
+		out[i] = cellStyle(bg, fg)
 	}
 	return out
 }
@@ -56,8 +67,17 @@ func resolve(root *store.Node, names []string) []*store.Node {
 	return chain
 }
 
-func matches(name, lowerQuery string) bool {
-	return lowerQuery != "" && strings.Contains(strings.ToLower(name), lowerQuery)
+// highlighted reports whether a frame matches the highlight: exactly the
+// function picked in the functions table, or containing the / search text.
+func (m model) highlighted(name string) bool {
+	switch {
+	case m.search == "":
+		return false
+	case m.exact:
+		return name == m.search
+	default:
+		return strings.Contains(strings.ToLower(name), strings.ToLower(m.search))
+	}
 }
 
 // selectFirst selects the first node (heaviest-first DFS) whose name matches,
@@ -83,25 +103,25 @@ func (m *model) selectFirst(match func(name string) bool) {
 	}
 	m.sel = path
 	if len(m.focus) > len(path) || !slices.Equal(m.focus, path[:len(m.focus)]) {
-		m.focus = nil
+		m.focus, m.zooms = nil, nil
 	}
 }
 
-// matchTotal is the weight under nodes matching q, counting nested matches once.
-func matchTotal(n *store.Node, q string) int64 {
-	if matches(n.Name, q) {
+// matchTotal is the weight under matching nodes, counting nested matches once.
+func matchTotal(n *store.Node, match func(string) bool) int64 {
+	if match(n.Name) {
 		return n.Total
 	}
 	var sum int64
 	for _, c := range n.Children {
-		sum += matchTotal(c, q)
+		sum += matchTotal(c, match)
 	}
 	return sum
 }
 
 func (m model) flameKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	if m.tree == nil {
-		if k := msg.String(); k == "esc" || k == "backspace" {
+		if msg.String() == "esc" {
 			m.screen = screenTop
 			return m.reload()
 		}
@@ -139,19 +159,19 @@ func (m model) flameKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		}
 		m.sel = append(slices.Clip(m.sel[:len(m.sel)-1]), sibs[i].Name)
 	case "enter":
-		m.focus = slices.Clone(m.sel)
-	case "/":
-		m.searching, m.search = true, ""
-	case "esc", "backspace":
-		switch {
-		case m.search != "":
-			m.search = ""
-		case len(m.focus) > 0:
-			m.focus = m.focus[:len(m.focus)-1]
-		default:
-			m.screen = screenTop
-			return m.reload()
+		if !slices.Equal(m.sel, m.focus) {
+			m.zooms = append(m.zooms, m.focus)
+			m.focus = slices.Clone(m.sel)
 		}
+	case "/":
+		m.searching, m.search, m.exact = true, "", false
+	case "esc", "backspace": // undo the last zoom; with none left, back to the table
+		if n := len(m.zooms); n > 0 {
+			m.focus, m.zooms = m.zooms[n-1], m.zooms[:n-1]
+			break
+		}
+		m.screen = screenTop
+		return m.reload()
 	}
 	return m, nil
 }
@@ -162,6 +182,19 @@ func names(chain []*store.Node) []string {
 		out = append(out, n.Name)
 	}
 	return out
+}
+
+// label shortens a frame name for a cell: Go's import path prefix
+// (github.com/org/repo/pkg.Func) says little in a few columns. The status line
+// shows the full name.
+func label(name string) string {
+	if strings.HasPrefix(name, "[") {
+		return name
+	}
+	if i := strings.LastIndex(name, "/"); i >= 0 && i < len(name)-1 {
+		return name[i+1:]
+	}
+	return name
 }
 
 type cell struct {
@@ -184,22 +217,28 @@ func (m model) viewFlame(b *strings.Builder, rows int) {
 		sel = focus
 	}
 	selNode := sel[len(sel)-1]
-	q := strings.ToLower(m.search)
 
 	// Status line first, so the graph gets the rest.
 	all := m.tree.Total
-	fmt.Fprintf(b, "%s  total %.1f%% · self %.1f%%", m.clip(selNode.Name, 40), pct(selNode.Total, all), pct(selNode.Self, all))
+	status := accS.Bold(true).Render("◆ "+m.clip(selNode.Name, 60)) +
+		dimS.Render("  total ") + fmt.Sprintf("%.1f%%", pct(selNode.Total, all)) +
+		dimS.Render("  self ") + fmt.Sprintf("%.1f%%", pct(selNode.Self, all))
 	if len(focus) > 1 {
-		fmt.Fprintf(b, " · zoom: %s", focus[len(focus)-1].Name)
+		status += dimS.Render("  拡大 zoom ") + redS.Render(focus[len(focus)-1].Name)
 	}
 	if m.search != "" || m.searching {
-		fmt.Fprintf(b, " · /%s", m.search)
+		cursor := ""
 		if m.searching {
-			b.WriteString("▏")
+			cursor = redS.Render("▌")
 		}
-		fmt.Fprintf(b, " (%.1f%%)", pct(matchTotal(focus[len(focus)-1], q), all))
+		chip := dimS.Render("  検索 ") + hit.Render(" /"+m.search+" ")
+		if m.exact {
+			chip = dimS.Render("  強調 ") + hit.Render(" "+m.search+" ")
+		}
+		status += chip + cursor +
+			dimS.Render(fmt.Sprintf("  %.1f%% highlighted", pct(matchTotal(focus[len(focus)-1], m.highlighted), all)))
 	}
-	b.WriteString("\n")
+	b.WriteString(status + "\n")
 	rows--
 
 	// Scroll so the selection stays visible.
@@ -226,18 +265,31 @@ func (m model) viewFlame(b *strings.Builder, rows int) {
 	for _, row := range grid {
 		col := 0
 		for _, c := range row {
+			// Rounding can make a cell start a column inside its left neighbour
+			// or end past the screen edge: trim it.
+			if c.x < col {
+				c.w -= col - c.x
+				c.x = col
+			}
+			c.w = min(c.w, width-c.x)
+			if c.w <= 0 {
+				continue
+			}
 			b.WriteString(strings.Repeat(" ", c.x-col))
 			st := colorOf(c.n.Name)
 			switch {
 			case c.n == selNode:
 				st = picked
-			case matches(c.n.Name, q):
+			case m.highlighted(c.n.Name):
 				st = hit
 			}
-			if c.w == 1 {
+			switch {
+			case c.w == 1:
 				b.WriteString(st.Render(" "))
-			} else { // one blank column separates neighbours
-				b.WriteString(st.Render(fit(c.n.Name, c.w-1)) + " ")
+			case c.w <= 4: // too narrow for a useful label: a plain block reads better
+				b.WriteString(st.Render(strings.Repeat(" ", c.w-1)) + " ")
+			default: // one blank column separates neighbours
+				b.WriteString(st.Render(fit(label(c.n.Name), c.w-1)) + " ")
 			}
 			col = c.x + c.w
 		}

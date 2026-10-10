@@ -22,7 +22,9 @@ image:
 	docker build --build-arg VERSION=$(VERSION) -t $(IMAGE):$(VERSION) .
 
 # Multi-arch image to the registry. Needs `docker login ghcr.io` first.
+# Refuses -dirty versions: re-pushing one tag isn't pulled by nodes that have it.
 push:
+	@case "$(VERSION)" in *-dirty) echo "push: uncommitted changes; commit first ($(VERSION))" >&2; exit 1;; esac
 	docker buildx build --platform $(PLATFORMS) --build-arg VERSION=$(VERSION) -t $(IMAGE):$(VERSION) --push .
 
 # Release archives in dist/, one per DIST platform. Names carry no version, so

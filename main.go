@@ -30,13 +30,11 @@ import (
 	"go.opentelemetry.io/collector/confmap"
 	"go.opentelemetry.io/collector/confmap/provider/yamlprovider"
 	"go.opentelemetry.io/collector/exporter/otlpexporter"
-	"go.opentelemetry.io/collector/extension"
 	"go.opentelemetry.io/collector/featuregate"
 	"go.opentelemetry.io/collector/otelcol"
 	"go.opentelemetry.io/collector/receiver/otlpreceiver"
 	"go.opentelemetry.io/collector/service/telemetry/otelconftelemetry"
 	profiler "go.opentelemetry.io/ebpf-profiler/collector"
-	"go.opentelemetry.io/ebpf-profiler/probes/offcpu"
 
 	"github.com/adrijh/kenbun/internal/api"
 	"github.com/adrijh/kenbun/internal/ingest"
@@ -422,7 +420,7 @@ func newCollector(st *store.Store, uris []string) (*otelcol.Collector, error) {
 			if err != nil {
 				return otelcol.Factories{}, err
 			}
-			extensions, err := otelcol.MakeFactoryMap[extension.Factory](offcpu.NewFactory())
+			extensions, err := extensionFactories()
 			if err != nil {
 				return otelcol.Factories{}, err
 			}

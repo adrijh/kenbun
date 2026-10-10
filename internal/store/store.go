@@ -26,6 +26,8 @@ type Sample struct {
 	TS      time.Time
 	Process string // grouping key: service.name or process.executable.name
 	PID     int64
+	Thread  string   // thread.name (the kernel comm), "" if unknown
+	OffCPU  bool     // Weight is nanoseconds blocked (off-CPU probe), not on-CPU samples
 	Frames  []string // leaf first
 	Weight  int64
 }
@@ -38,6 +40,14 @@ type ProcStat struct {
 
 // StackWeight is the aggregated weight of one distinct stack.
 type StackWeight struct {
+	Frames []string `json:"frames"` // leaf first
+	Weight int64    `json:"weight"`
+}
+
+// ThreadStack is the aggregated weight of one stack in one thread, on or off CPU.
+type ThreadStack struct {
+	Thread string   `json:"thread"`
+	OffCPU bool     `json:"off_cpu"`
 	Frames []string `json:"frames"` // leaf first
 	Weight int64    `json:"weight"`
 }
@@ -65,6 +75,8 @@ var BaseSchema = []string{
 		ts       BIGINT NOT NULL, -- unix nanoseconds: no timezone handling differences between backends
 		process  VARCHAR NOT NULL,
 		pid      BIGINT,
+		thread   VARCHAR NOT NULL,
+		off_cpu  INTEGER NOT NULL, -- 1: weight is nanoseconds off-CPU, 0: on-CPU sample count
 		stack_id BIGINT NOT NULL,
 		weight   BIGINT NOT NULL
 	)`,
@@ -138,9 +150,13 @@ func (s *Store) Ingest(ctx context.Context, samples []Sample) error {
 
 	sampleRows := make([][]any, len(samples))
 	for i, smp := range samples {
-		sampleRows[i] = []any{smp.TS.UnixNano(), smp.Process, smp.PID, ids[i], smp.Weight}
+		off := 0
+		if smp.OffCPU {
+			off = 1
+		}
+		sampleRows[i] = []any{smp.TS.UnixNano(), smp.Process, smp.PID, smp.Thread, off, ids[i], smp.Weight}
 	}
-	if err := insertRows(ctx, tx, "INSERT INTO samples (ts, process, pid, stack_id, weight) VALUES ", sampleRows); err != nil {
+	if err := insertRows(ctx, tx, "INSERT INTO samples (ts, process, pid, thread, off_cpu, stack_id, weight) VALUES ", sampleRows); err != nil {
 		return fmt.Errorf("insert samples: %w", err)
 	}
 
@@ -201,12 +217,12 @@ func stackID(folded string) int64 {
 	return int64(h.Sum64())
 }
 
-// Processes returns processes by total weight in [from, to).
+// Processes returns processes by total on-CPU weight in [from, to).
 func (s *Store) Processes(ctx context.Context, from, to time.Time) ([]ProcStat, error) {
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT process, sum(weight) AS w
 		FROM samples
-		WHERE ts >= ? AND ts < ?
+		WHERE ts >= ? AND ts < ? AND off_cpu = 0
 		GROUP BY process
 		ORDER BY w DESC`, from.UnixNano(), to.UnixNano())
 	if err != nil {
@@ -225,15 +241,15 @@ func (s *Store) Processes(ctx context.Context, from, to time.Time) ([]ProcStat, 
 	return out, rows.Err()
 }
 
-// Stacks returns the weight of each distinct stack of one process in [from, to).
-// This is the input for both Top and the flamegraph.
+// Stacks returns the on-CPU weight of each distinct stack of one process in
+// [from, to). This is the input for both Top and the flamegraph.
 func (s *Store) Stacks(ctx context.Context, process string, from, to time.Time) ([]StackWeight, error) {
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT st.folded, a.w
 		FROM (
 			SELECT stack_id, sum(weight) AS w
 			FROM samples
-			WHERE process = ? AND ts >= ? AND ts < ?
+			WHERE process = ? AND ts >= ? AND ts < ? AND off_cpu = 0
 			GROUP BY stack_id
 		) a
 		JOIN stacks st ON st.stack_id = a.stack_id`,
@@ -250,13 +266,46 @@ func (s *Store) Stacks(ctx context.Context, process string, from, to time.Time) 
 		if err := rows.Scan(&folded, &w); err != nil {
 			return nil, err
 		}
-		var frames []string
-		if folded != "" {
-			frames = strings.Split(folded, sep)
-		}
-		out = append(out, StackWeight{Frames: frames, Weight: w})
+		out = append(out, StackWeight{Frames: split(folded), Weight: w})
 	}
 	return out, rows.Err()
+}
+
+// ThreadStacks is Stacks per thread, on and off CPU: the input for Loop.
+func (s *Store) ThreadStacks(ctx context.Context, process string, from, to time.Time) ([]ThreadStack, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT a.thread, a.off_cpu, st.folded, a.w
+		FROM (
+			SELECT thread, off_cpu, stack_id, sum(weight) AS w
+			FROM samples
+			WHERE process = ? AND ts >= ? AND ts < ?
+			GROUP BY thread, off_cpu, stack_id
+		) a
+		JOIN stacks st ON st.stack_id = a.stack_id`,
+		process, from.UnixNano(), to.UnixNano())
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var out []ThreadStack
+	for rows.Next() {
+		var t ThreadStack
+		var folded string
+		if err := rows.Scan(&t.Thread, &t.OffCPU, &folded, &t.Weight); err != nil {
+			return nil, err
+		}
+		t.Frames = split(folded)
+		out = append(out, t)
+	}
+	return out, rows.Err()
+}
+
+func split(folded string) []string {
+	if folded == "" {
+		return nil
+	}
+	return strings.Split(folded, sep)
 }
 
 // Prune deletes samples older than the cutoff, then runs the dialect's

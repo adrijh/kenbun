@@ -47,4 +47,10 @@ func TestClientMatchesStore(t *testing.T) {
 	if !reflect.DeepEqual(store.Top(gotSt, 0), store.Top(wantSt, 0)) { // row order is unspecified
 		t.Error("Stacks via client differ from store")
 	}
+
+	wantTS, _ := st.ThreadStacks(ctx, "python3.14", from, to)
+	gotTS, err := c.ThreadStacks(ctx, "python3.14", from, to)
+	if err != nil || len(gotTS) == 0 || len(gotTS) != len(wantTS) || !reflect.DeepEqual(store.Loop(gotTS), store.Loop(wantTS)) {
+		t.Errorf("ThreadStacks via client: %d rows, %v; want %d rows", len(gotTS), err, len(wantTS))
+	}
 }

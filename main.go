@@ -28,11 +28,13 @@ import (
 	"go.opentelemetry.io/collector/component"
 	"go.opentelemetry.io/collector/confmap"
 	"go.opentelemetry.io/collector/confmap/provider/yamlprovider"
+	"go.opentelemetry.io/collector/extension"
 	"go.opentelemetry.io/collector/featuregate"
 	"go.opentelemetry.io/collector/otelcol"
 	"go.opentelemetry.io/collector/receiver/otlpreceiver"
 	"go.opentelemetry.io/collector/service/telemetry/otelconftelemetry"
 	profiler "go.opentelemetry.io/ebpf-profiler/collector"
+	"go.opentelemetry.io/ebpf-profiler/probes/offcpu"
 
 	"github.com/adrijh/kenbun/internal/api"
 	"github.com/adrijh/kenbun/internal/ingest"
@@ -341,7 +343,11 @@ func newCollector(st *store.Store, otlp, dump, logPath string, profile bool) (*o
 	}
 	if profile {
 		uris = append(uris,
-			"yaml:receivers::profiling::samples_per_second: 97", // prime: avoids lockstep with periodic work
+			fmt.Sprintf("yaml:receivers::profiling::samples_per_second: %d", store.SamplesPerSecond),
+			// Off-CPU time, so the LOOP view sees callbacks blocking in sleep or I/O.
+			fmt.Sprintf("yaml:extensions::offcpu::threshold: %g", store.OffCPUThreshold),
+			"yaml:receivers::profiling::probes: [offcpu]",
+			"yaml:service::extensions: [offcpu]",
 			"yaml:service::pipelines::profiles::receivers: [otlp, profiling]",
 		)
 	}
@@ -369,10 +375,15 @@ func newCollector(st *store.Store, otlp, dump, logPath string, profile bool) (*o
 			if err != nil {
 				return otelcol.Factories{}, err
 			}
+			extensions, err := otelcol.MakeFactoryMap[extension.Factory](offcpu.NewFactory())
+			if err != nil {
+				return otelcol.Factories{}, err
+			}
 			return otelcol.Factories{
-				Receivers: receivers,
-				Exporters: exporters,
-				Telemetry: otelconftelemetry.NewFactory(),
+				Receivers:  receivers,
+				Exporters:  exporters,
+				Extensions: extensions,
+				Telemetry:  otelconftelemetry.NewFactory(),
 			}, nil
 		},
 		ConfigProviderSettings: otelcol.ConfigProviderSettings{

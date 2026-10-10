@@ -41,6 +41,9 @@ func Convert(pd pprofile.Profiles) []store.Sample {
 			for k := 0; k < profs.Len(); k++ {
 				prof := profs.At(k)
 				fallbackTS := prof.Time().AsTime()
+				// The off-CPU probe reports its own profile, valued in nanoseconds
+				// blocked; everything else is on-CPU samples.
+				offCPU := r.str(prof.SampleType().TypeStrindex()) == "off_cpu"
 
 				samples := prof.Samples()
 				for s := 0; s < samples.Len(); s++ {
@@ -49,6 +52,8 @@ func Convert(pd pprofile.Profiles) []store.Sample {
 						TS:      sampleTime(smp, fallbackTS),
 						Process: process,
 						PID:     pid,
+						Thread:  r.thread(smp),
+						OffCPU:  offCPU,
 						Frames:  r.frames(smp.StackIndex()),
 						Weight:  weight(smp),
 					})
@@ -82,7 +87,8 @@ func intAttr(attrs pcommon.Map, key string) int64 {
 	return 0
 }
 
-// weight: the eBPF profiler leaves Values empty and records one timestamp per event.
+// weight: the eBPF profiler leaves on-CPU Values empty and records one timestamp
+// per event. Off-CPU Values are the nanoseconds of each event.
 func weight(s pprofile.Sample) int64 {
 	if v := s.Values(); v.Len() > 0 {
 		var sum int64
@@ -168,6 +174,20 @@ func (r *resolver) frames(stackIdx int32) []string {
 
 	r.cache[stackIdx] = out
 	return out
+}
+
+// thread returns the sample's thread.name (the kernel comm), or "".
+func (r *resolver) thread(s pprofile.Sample) string {
+	attrs := r.d.AttributeTable()
+	idx := s.AttributeIndices()
+	for i := 0; i < idx.Len(); i++ {
+		if ai := int(idx.At(i)); ai > 0 && ai < attrs.Len() {
+			if a := attrs.At(ai); r.str(a.KeyStrindex()) == "thread.name" {
+				return a.Value().Str()
+			}
+		}
+	}
+	return ""
 }
 
 func (r *resolver) str(i int32) string {

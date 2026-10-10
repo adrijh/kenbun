@@ -3,6 +3,7 @@
 //
 //	GET /api/processes?from=&to=          → []store.ProcStat
 //	GET /api/stacks?process=&from=&to=    → []store.StackWeight
+//	GET /api/threadstacks?process=&from=&to= → []store.ThreadStack
 package api
 
 import (
@@ -38,6 +39,15 @@ func Handler(st *store.Store) http.Handler {
 		}
 		ss, err := st.Stacks(r.Context(), r.URL.Query().Get("process"), from, to)
 		reply(w, ss, err)
+	})
+	mux.HandleFunc("GET /api/threadstacks", func(w http.ResponseWriter, r *http.Request) {
+		from, to, err := timeRange(r)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		ts, err := st.ThreadStacks(r.Context(), r.URL.Query().Get("process"), from, to)
+		reply(w, ts, err)
 	})
 	return mux
 }
@@ -86,6 +96,13 @@ func (c *Client) Stacks(ctx context.Context, process string, from, to time.Time)
 	q.Set("process", process)
 	var out []store.StackWeight
 	return out, c.get(ctx, "/api/stacks", q, &out)
+}
+
+func (c *Client) ThreadStacks(ctx context.Context, process string, from, to time.Time) ([]store.ThreadStack, error) {
+	q := rangeQuery(from, to)
+	q.Set("process", process)
+	var out []store.ThreadStack
+	return out, c.get(ctx, "/api/threadstacks", q, &out)
 }
 
 func rangeQuery(from, to time.Time) url.Values {

@@ -49,12 +49,14 @@ var screenNames = map[screen][2]string{ // english, japanese
 	screenProcs: {"PROCS", "プロセス"},
 	screenTop:   {"FUNCTIONS", "関数"},
 	screenFlame: {"FLAME", "炎"},
+	screenLoop:  {"LOOP", "ループ"},
 }
 
 var keys = map[screen][][2]string{
 	screenProcs: {{"↑↓", "move"}, {"enter", "open"}, {"w", "window"}, {"p", "pause"}, {"q", "quit"}},
-	screenTop:   {{"↑↓", "move"}, {"enter", "show in flame"}, {"tab", "flame"}, {"d", "diff"}, {"w", "window"}, {"p", "pause"}, {"esc", "back"}},
-	screenFlame: {{"←↑↓→", "move"}, {"enter", "zoom"}, {"esc", "zoom out/back"}, {"/", "search"}, {"tab", "functions"}, {"w", "window"}, {"p", "pause"}},
+	screenTop:   {{"↑↓", "move"}, {"enter", "show in flame"}, {"tab", "flame"}, {"a", "asyncio loop"}, {"d", "diff"}, {"w", "window"}, {"p", "pause"}, {"esc", "back"}},
+	screenFlame: {{"←↑↓→", "move"}, {"enter", "zoom"}, {"esc", "zoom out/back"}, {"/", "search"}, {"tab", "functions"}, {"a", "asyncio loop"}, {"w", "window"}, {"p", "pause"}},
+	screenLoop:  {{"esc", "functions"}, {"w", "window"}, {"p", "pause"}, {"q", "quit"}},
 }
 
 func (m model) width() int {
@@ -80,6 +82,8 @@ func (m model) View() tea.View {
 		m.viewTop(&b, rows)
 	case screenFlame:
 		m.viewFlame(&b, rows)
+	case screenLoop:
+		m.viewLoop(&b, rows)
 	}
 
 	// Pin error and footer to the bottom.
@@ -141,6 +145,9 @@ func (m model) footer() string {
 	var parts []string
 	used := 0
 	for _, k := range keys[m.screen] {
+		if k[0] == "a" && !m.hasLoop() {
+			continue
+		}
 		w := lipgloss.Width(k[0]) + 1 + lipgloss.Width(k[1]) + 3
 		if used+w > m.width() {
 			break
@@ -233,6 +240,47 @@ func (m model) viewTop(b *strings.Builder, rows int) {
 			nameS = dimS
 		}
 		b.WriteString("  " + cols + deltas + " " + heat(self).Render(solid) + ruleS.Render(shade) + "  " + nameS.Render(name) + "\n")
+	}
+}
+
+// viewLoop shows each asyncio loop thread: how much of its time callbacks held
+// the loop, and which callbacks, on CPU or waiting (sleep, blocking I/O).
+func (m model) viewLoop(b *strings.Builder, rows int) {
+	if len(m.loops) == 0 {
+		b.WriteString(dimS.Render("  no asyncio event loop in window (needs Python frames; off-CPU needs --profile)") + "\n")
+		return
+	}
+	waitS := lipgloss.NewStyle().Foreground(carp)
+	for _, l := range m.loops {
+		if rows < 4 {
+			break
+		}
+		blocked := pct(int64(l.Blocked()), int64(l.Total))
+		b.WriteString("  " + dimS.Render("thread ") + boldS.Render(l.Thread) + dimS.Render("  loop blocked ") +
+			heat(blocked).Bold(true).Render(fmt.Sprintf("%.1f%%", blocked)) + "  " +
+			heat(blocked).Render(bar(blocked/100, 20)) + "  " +
+			upS.Render(fmt.Sprintf("cpu %.1f%%", pct(int64(l.CPU), int64(l.Total)))) + "  " +
+			waitS.Render(fmt.Sprintf("waiting %.1f%%", pct(int64(l.Wait), int64(l.Total)))) + "  " +
+			dimS.Render(fmt.Sprintf("idle %.1f%%", pct(int64(l.Idle), int64(l.Total)))) + "\n")
+		head := fmt.Sprintf("  %7s %7s %7s  %-4s  ", "BLOCKED", "CPU", "WAIT", "")
+		b.WriteString(dimS.Render(head+"CALLBACK") + "\n")
+		rows -= 2
+		nameW := max(8, m.width()-lipgloss.Width(head))
+		for _, c := range l.Callbacks {
+			if rows < 2 {
+				break
+			}
+			kind, kindS := "cpu", upS
+			if c.Wait > c.CPU {
+				kind, kindS = "wait", waitS
+			}
+			b.WriteString(fmt.Sprintf("  %6.1f%% %6.1f%% %6.1f%%  ", pct(int64(c.Blocked()), int64(l.Total)),
+				pct(int64(c.CPU), int64(l.Total)), pct(int64(c.Wait), int64(l.Total))) +
+				kindS.Render(fmt.Sprintf("%-4s", kind)) + "  " + fit(c.Name, nameW) + "\n")
+			rows--
+		}
+		b.WriteString("\n")
+		rows--
 	}
 }
 

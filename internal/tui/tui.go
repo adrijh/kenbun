@@ -1,5 +1,6 @@
 // Package tui is kenbun's terminal UI: process list → top functions ⇄
-// flamegraph, over a sliding time window that can be paused and diffed.
+// flamegraph (or the asyncio loop view), over a sliding time window that can
+// be paused and diffed.
 // It polls its Source every refresh interval.
 package tui
 
@@ -16,6 +17,7 @@ import (
 type Source interface {
 	Processes(ctx context.Context, from, to time.Time) ([]store.ProcStat, error)
 	Stacks(ctx context.Context, process string, from, to time.Time) ([]store.StackWeight, error)
+	ThreadStacks(ctx context.Context, process string, from, to time.Time) ([]store.ThreadStack, error)
 }
 
 type Options struct {
@@ -34,6 +36,7 @@ const (
 	screenProcs screen = iota
 	screenTop
 	screenFlame
+	screenLoop
 )
 
 type (
@@ -44,10 +47,16 @@ type (
 	}
 	stacksMsg struct {
 		gen   int
+		loops []store.LoopStat
+
 		top   []store.FuncStat
 		tree  *store.Node
 		prev  map[string]store.FuncStat // previous window, only in diff mode
 		prevN int64
+	}
+	loopMsg struct {
+		gen   int
+		loops []store.LoopStat
 	}
 	errMsg struct{ err error }
 )
@@ -68,6 +77,8 @@ type model struct {
 	procs  []store.ProcStat
 	pcur   int
 	proc   string
+
+	loops []store.LoopStat
 
 	top   []store.FuncStat
 	tree  *store.Node
@@ -130,6 +141,15 @@ func (m model) load() tea.Cmd {
 				return errMsg{err}
 			}
 			return procsMsg{gen, ps}
+		}
+	}
+	if m.screen == screenLoop {
+		return func() tea.Msg {
+			ts, err := src.ThreadStacks(context.Background(), proc, from, to)
+			if err != nil {
+				return errMsg{err}
+			}
+			return loopMsg{gen, store.Loop(ts)}
 		}
 	}
 	diff := m.diff && m.screen == screenTop
@@ -198,6 +218,12 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.jump = ""
 		}
 
+	case loopMsg:
+		if msg.gen != m.gen {
+			break
+		}
+		m.loops, m.err = msg.loops, nil
+
 	case errMsg:
 		m.err = msg.err
 
@@ -225,10 +251,21 @@ func (m model) key(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		switch m.screen {
 		case screenTop:
 			m.screen = screenFlame
-		case screenFlame:
+		case screenFlame, screenLoop:
 			m.screen = screenTop
 		}
 		return m.reload()
+	case "a":
+		switch m.screen {
+		case screenTop, screenFlame:
+			if m.hasLoop() {
+				m.screen, m.loops = screenLoop, nil
+				return m.reload()
+			}
+		case screenLoop:
+			m.screen = screenTop
+			return m.reload()
+		}
 	}
 
 	switch m.screen {
@@ -270,6 +307,12 @@ func (m model) key(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 
 	case screenFlame:
 		return m.flameKey(msg)
+
+	case screenLoop:
+		if k := msg.String(); k == "esc" || k == "backspace" {
+			m.screen = screenTop
+			return m.reload()
+		}
 	}
 	return m, nil
 }
@@ -289,6 +332,16 @@ func (m model) searchKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		m.search += msg.Text
 	}
 	return m, nil
+}
+
+// hasLoop: the process runs an asyncio event loop, judging by on-CPU samples.
+func (m model) hasLoop() bool {
+	for _, f := range m.top {
+		if f.Name == store.LoopFrame {
+			return true
+		}
+	}
+	return false
 }
 
 func clamp(i, n int) int { return max(0, min(i, n-1)) }

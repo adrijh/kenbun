@@ -209,6 +209,21 @@ func (s *Store) loadSeen() error {
 	return rows.Err()
 }
 
+func (s *Store) prune(ctx context.Context, before time.Time) error {
+	s.mu.Lock() // no Ingest may trust seen while stacks are deleted
+	defer s.mu.Unlock()
+	if _, err := s.db.ExecContext(ctx, `DELETE FROM samples WHERE ts < ?`, before.UnixNano()); err != nil {
+		return err
+	}
+	if _, err := s.db.ExecContext(ctx, `DELETE FROM stacks WHERE stack_id NOT IN (SELECT stack_id FROM samples)`); err != nil {
+		return err
+	}
+	// Forget them all rather than track which went: the next batches re-insert
+	// their stacks (INSERT OR IGNORE) and refill it.
+	s.seen = map[int64]struct{}{}
+	return nil
+}
+
 // stackID must be stable across runs (stacks persist in a file DB),
 // so no maphash/random seeds.
 func stackID(folded string) int64 {
@@ -308,11 +323,10 @@ func split(folded string) []string {
 	return strings.Split(folded, sep)
 }
 
-// Prune deletes samples older than the cutoff, then runs the dialect's
-// maintenance. Call it periodically (every ~30s).
-// Unreferenced stacks are kept: they're small and likely to come back.
+// Prune deletes samples older than the cutoff and the stacks no sample uses
+// any more, then runs the dialect's maintenance. Call it periodically (every ~30s).
 func (s *Store) Prune(ctx context.Context, before time.Time) error {
-	if _, err := s.db.ExecContext(ctx, `DELETE FROM samples WHERE ts < ?`, before.UnixNano()); err != nil {
+	if err := s.prune(ctx, before); err != nil {
 		return err
 	}
 	if len(s.maintenance) == 0 {

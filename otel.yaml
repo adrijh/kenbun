@@ -1,0 +1,19 @@
+# Embedded into the binary. main.go layers flag-driven overrides on top
+# (OTLP endpoint, log file, --dump exporter).
+receivers:
+  otlp:
+    protocols:
+      grpc:
+        endpoint: localhost:4317
+
+exporters:
+  kenbun:
+
+service:
+  pipelines:
+    profiles:
+      receivers: [otlp]
+      exporters: [kenbun]
+  telemetry:
+    metrics:
+      level: none # no self-metrics endpoint on :8888

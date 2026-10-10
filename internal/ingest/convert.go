@@ -1,0 +1,173 @@
+package ingest
+
+import (
+	"path"
+	"time"
+
+	"go.opentelemetry.io/collector/pdata/pcommon"
+	"go.opentelemetry.io/collector/pdata/pprofile"
+
+	"github.com/adrijh/kenbun/internal/store"
+)
+
+// skipProcesses are always profiled but never what you're looking for.
+var skipProcesses = map[string]bool{
+	"otelcol-ebpf-profiler": true,
+	"kenbun":                true,
+}
+
+// Convert turns one OTLP batch into kenbun samples.
+// It must not keep references to pd: everything is copied into plain Go values.
+func Convert(pd pprofile.Profiles) []store.Sample {
+	dict := pd.Dictionary()
+	r := newResolver(dict)
+
+	var out []store.Sample
+	rps := pd.ResourceProfiles()
+	for i := 0; i < rps.Len(); i++ {
+		rp := rps.At(i)
+		attrs := rp.Resource().Attributes()
+
+		process := processKey(attrs)
+		if process == "" || skipProcesses[process] {
+			continue // kernel threads (no executable) and kenbun's own plumbing
+		}
+		pid := intAttr(attrs, "process.pid")
+
+		sps := rp.ScopeProfiles()
+		for j := 0; j < sps.Len(); j++ {
+			profs := sps.At(j).Profiles()
+			for k := 0; k < profs.Len(); k++ {
+				prof := profs.At(k)
+				fallbackTS := prof.Time().AsTime()
+
+				samples := prof.Samples()
+				for s := 0; s < samples.Len(); s++ {
+					smp := samples.At(s)
+					out = append(out, store.Sample{
+						TS:      sampleTime(smp, fallbackTS),
+						Process: process,
+						PID:     pid,
+						Frames:  r.frames(smp.StackIndex()),
+						Weight:  weight(smp),
+					})
+				}
+			}
+		}
+	}
+	return out
+}
+
+// processKey prefers service.name (set by SDKs or k8sattributes) and falls back
+// to the executable name the eBPF profiler sets.
+func processKey(attrs pcommon.Map) string {
+	for _, k := range []string{"service.name", "process.executable.name"} {
+		if v, ok := attrs.Get(k); ok && v.Str() != "" {
+			return v.Str()
+		}
+	}
+	return ""
+}
+
+func intAttr(attrs pcommon.Map, key string) int64 {
+	if v, ok := attrs.Get(key); ok && v.Type() == pcommon.ValueTypeInt {
+		return v.Int()
+	}
+	return 0
+}
+
+// weight: the eBPF profiler leaves Values empty and records one timestamp per event.
+func weight(s pprofile.Sample) int64 {
+	if v := s.Values(); v.Len() > 0 {
+		var sum int64
+		for i := 0; i < v.Len(); i++ {
+			sum += v.At(i)
+		}
+		return sum
+	}
+	if n := s.TimestampsUnixNano().Len(); n > 0 {
+		return int64(n)
+	}
+	return 1
+}
+
+func sampleTime(s pprofile.Sample, fallback time.Time) time.Time {
+	if ts := s.TimestampsUnixNano(); ts.Len() > 0 {
+		return time.Unix(0, int64(ts.At(0))).UTC()
+	}
+	return fallback.UTC()
+}
+
+// resolver turns stack indices into frame names, caching per batch:
+// many samples in a batch share the same stack.
+type resolver struct {
+	d     pprofile.ProfilesDictionary
+	cache map[int32][]string
+}
+
+func newResolver(d pprofile.ProfilesDictionary) *resolver {
+	return &resolver{d: d, cache: map[int32][]string{}}
+}
+
+// frames returns function names, leaf first. Index 0 in every dictionary
+// table is an empty placeholder, so it's treated as "missing".
+func (r *resolver) frames(stackIdx int32) []string {
+	if f, ok := r.cache[stackIdx]; ok {
+		return f
+	}
+
+	stacks := r.d.StackTable()
+	if stackIdx <= 0 || int(stackIdx) >= stacks.Len() {
+		return nil
+	}
+	locs, fns, maps := r.d.LocationTable(), r.d.FunctionTable(), r.d.MappingTable()
+
+	locIdx := stacks.At(int(stackIdx)).LocationIndices()
+	out := make([]string, 0, locIdx.Len())
+	for i := 0; i < locIdx.Len(); i++ {
+		li := int(locIdx.At(i))
+		if li <= 0 || li >= locs.Len() {
+			continue
+		}
+		loc := locs.At(li)
+		lines := loc.Lines()
+
+		if lines.Len() == 0 {
+			// Unsymbolized native frame: label it with its library and collapse
+			// runs (a Python stack starts with ~12 libpython frames otherwise).
+			name := "[??]"
+			if mi := int(loc.MappingIndex()); mi > 0 && mi < maps.Len() {
+				if f := r.str(maps.At(mi).FilenameStrindex()); f != "" {
+					name = "[" + path.Base(f) + "]"
+				}
+			}
+			if n := len(out); n > 0 && out[n-1] == name {
+				continue
+			}
+			out = append(out, name)
+			continue
+		}
+
+		// Inlined frames: Lines()[0] is the innermost.
+		for j := 0; j < lines.Len(); j++ {
+			name := "??"
+			if fi := int(lines.At(j).FunctionIndex()); fi > 0 && fi < fns.Len() {
+				if n := r.str(fns.At(fi).NameStrindex()); n != "" {
+					name = n
+				}
+			}
+			out = append(out, name)
+		}
+	}
+
+	r.cache[stackIdx] = out
+	return out
+}
+
+func (r *resolver) str(i int32) string {
+	st := r.d.StringTable()
+	if i <= 0 || int(i) >= st.Len() {
+		return ""
+	}
+	return st.At(int(i))
+}

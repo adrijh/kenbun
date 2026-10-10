@@ -249,7 +249,7 @@ func (m model) key(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		return m.reload()
 	case "p", "space":
 		m.paused = !m.paused
-		m.at = time.Now()
+		m.at = m.asOf // freeze the window on screen; unpausing jumps back to now
 		return m.reload()
 	case "tab":
 		switch m.screen {

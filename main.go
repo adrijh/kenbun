@@ -62,7 +62,7 @@ const usage = `kenbun: OTLP profiles in your terminal
 
   kenbun [--otlp addr] [--dump file.jsonl]   receive profiles and show the TUI
          [--profile]                         also profile this machine (embedded eBPF profiler, Linux, root)
-  kenbun view file.jsonl                     show a capture (from --dump) offline
+  kenbun view file.jsonl[.gz]                show a capture (from --dump) offline
   kenbun serve [--otlp addr] [--http addr]   receive profiles and serve the HTTP API
   kenbun tui [--addr host:port]              TUI for a remote 'kenbun serve'
   kenbun agent [--to host:port]              eBPF profiler on a k8s node, pushing to kenbun

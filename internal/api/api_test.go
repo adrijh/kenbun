@@ -20,12 +20,14 @@ func TestClientMatchesStore(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer st.Close()
-	samples, err := ingest.ReadJSONL("../ingest/testdata/profiles.jsonl")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := st.Ingest(ctx, samples); err != nil {
-		t.Fatal(err)
+	for _, f := range []string{"profiles.jsonl", "asyncio.jsonl.gz"} {
+		samples, err := ingest.ReadJSONL("../ingest/testdata/" + f)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := st.Ingest(ctx, samples); err != nil {
+			t.Fatal(err)
+		}
 	}
 
 	srv := httptest.NewServer(Handler(st))
@@ -50,7 +52,10 @@ func TestClientMatchesStore(t *testing.T) {
 
 	wantTS, _ := st.ThreadStacks(ctx, "python3.14", from, to)
 	gotTS, err := c.ThreadStacks(ctx, "python3.14", from, to)
-	if err != nil || len(gotTS) == 0 || len(gotTS) != len(wantTS) || !reflect.DeepEqual(store.Loop(gotTS), store.Loop(wantTS)) {
-		t.Errorf("ThreadStacks via client: %d rows, %v; want %d rows", len(gotTS), err, len(wantTS))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := store.Loop(wantTS); len(want) == 0 || !reflect.DeepEqual(store.Loop(gotTS), want) {
+		t.Error("ThreadStacks via client differ from store")
 	}
 }

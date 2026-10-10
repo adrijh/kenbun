@@ -41,6 +41,7 @@ var (
 	ruleS  = lipgloss.NewStyle().Foreground(rule)
 	selS   = lipgloss.NewStyle().Background(lipgloss.Color(selRowHex)).Foreground(fuji).Bold(true)
 	pauseS = lipgloss.NewStyle().Foreground(carp).Bold(true)
+	waitS  = lipgloss.NewStyle().Foreground(carp) // loop blocked waiting (vs upS: on CPU)
 	upS    = lipgloss.NewStyle().Foreground(waveRed)
 	downS  = greenS
 )
@@ -252,18 +253,16 @@ func (m model) viewLoop(b *strings.Builder, rows int) {
 		b.WriteString(dimS.Render("  no asyncio event loop in window (needs Python frames; off-CPU needs --profile)") + "\n")
 		return
 	}
-	waitS := lipgloss.NewStyle().Foreground(carp)
 	for _, l := range m.loops {
 		if rows < 4 {
 			break
 		}
+		share := func(d time.Duration) string { return fmt.Sprintf("%.1f%%", pct(int64(d), int64(l.Total))) }
 		blocked := pct(int64(l.Blocked()), int64(l.Total))
 		b.WriteString("  " + dimS.Render("thread ") + boldS.Render(l.Thread) + dimS.Render("  loop blocked ") +
-			heat(blocked).Bold(true).Render(fmt.Sprintf("%.1f%%", blocked)) + "  " +
-			heat(blocked).Render(bar(blocked/100, 20)) + "  " +
-			upS.Render(fmt.Sprintf("cpu %.1f%%", pct(int64(l.CPU), int64(l.Total)))) + "  " +
-			waitS.Render(fmt.Sprintf("waiting %.1f%%", pct(int64(l.Wait), int64(l.Total)))) + "  " +
-			dimS.Render(fmt.Sprintf("idle %.1f%%", pct(int64(l.Idle), int64(l.Total)))) + "\n")
+			heat(blocked).Bold(true).Render(share(l.Blocked())) + "  " + heat(blocked).Render(bar(blocked/100, 20)) + "  " +
+			upS.Render("cpu "+share(l.CPU)) + "  " + waitS.Render("waiting "+share(l.Wait)) + "  " +
+			dimS.Render("idle "+share(l.Idle)) + "\n")
 		head := fmt.Sprintf("  %7s %7s %7s  %-4s  ", "BLOCKED", "CPU", "WAIT", "")
 		b.WriteString(dimS.Render(head+"CALLBACK") + "\n")
 		rows -= 2
@@ -272,13 +271,12 @@ func (m model) viewLoop(b *strings.Builder, rows int) {
 			if rows < 2 {
 				break
 			}
-			kind, kindS := "cpu", upS
+			kind, kindS := "cpu ", upS
 			if c.Wait > c.CPU {
 				kind, kindS = "wait", waitS
 			}
-			b.WriteString(fmt.Sprintf("  %6.1f%% %6.1f%% %6.1f%%  ", pct(int64(c.Blocked()), int64(l.Total)),
-				pct(int64(c.CPU), int64(l.Total)), pct(int64(c.Wait), int64(l.Total))) +
-				kindS.Render(fmt.Sprintf("%-4s", kind)) + "  " + fit(c.Name, nameW) + "\n")
+			b.WriteString(fmt.Sprintf("  %7s %7s %7s  ", share(c.Blocked()), share(c.CPU), share(c.Wait)) +
+				kindS.Render(kind) + "  " + fit(c.Name, nameW) + "\n")
 			rows--
 		}
 		b.WriteString("\n")

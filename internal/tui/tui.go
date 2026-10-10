@@ -47,8 +47,6 @@ type (
 	}
 	stacksMsg struct {
 		gen   int
-		loops []store.LoopStat
-
 		top   []store.FuncStat
 		tree  *store.Node
 		prev  map[string]store.FuncStat // previous window, only in diff mode

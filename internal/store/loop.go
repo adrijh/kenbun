@@ -1,13 +1,13 @@
 package store
 
 import (
+	"cmp"
 	"slices"
-	"sort"
 	"strings"
 	"time"
 )
 
-// The eBPF profiler settings kenbun runs with (main.go, k8s/profiler.yaml).
+// The eBPF profiler settings of --profile and `kenbun agent` (main.go).
 // Loop needs them to put on-CPU sample counts and sampled off-CPU nanoseconds
 // on one time scale.
 const (
@@ -51,7 +51,7 @@ var asyncioInternal = map[string]bool{
 // into blocked (per callback, CPU vs waiting) and idle. Busiest loop first.
 func Loop(stacks []ThreadStack) []LoopStat {
 	loops := map[string]*LoopStat{}
-	cbs := map[string]map[string]*CallbackStat{}
+	cbs := map[[2]string]*CallbackStat{} // by thread and callback
 	for _, s := range stacks {
 		if !slices.Contains(s.Frames, LoopFrame) {
 			continue
@@ -59,7 +59,7 @@ func Loop(stacks []ThreadStack) []LoopStat {
 		l := loops[s.Thread]
 		if l == nil {
 			l = &LoopStat{Thread: s.Thread}
-			loops[s.Thread], cbs[s.Thread] = l, map[string]*CallbackStat{}
+			loops[s.Thread] = l
 		}
 		d := s.duration()
 		l.Total += d
@@ -67,10 +67,11 @@ func Loop(stacks []ThreadStack) []LoopStat {
 		name, ok := callback(s.Frames)
 		switch {
 		case ok:
-			c := cbs[s.Thread][name]
+			k := [2]string{s.Thread, name}
+			c := cbs[k]
 			if c == nil {
 				c = &CallbackStat{Name: name}
-				cbs[s.Thread][name] = c
+				cbs[k] = c
 			}
 			if s.OffCPU {
 				l.Wait, c.Wait = l.Wait+d, c.Wait+d
@@ -82,25 +83,18 @@ func Loop(stacks []ThreadStack) []LoopStat {
 		}
 	}
 
+	for k, c := range cbs {
+		loops[k[0]].Callbacks = append(loops[k[0]].Callbacks, *c)
+	}
 	out := make([]LoopStat, 0, len(loops))
-	for t, l := range loops {
-		for _, c := range cbs[t] {
-			l.Callbacks = append(l.Callbacks, *c)
-		}
-		sort.Slice(l.Callbacks, func(i, j int) bool {
-			a, b := l.Callbacks[i], l.Callbacks[j]
-			if a.Blocked() != b.Blocked() {
-				return a.Blocked() > b.Blocked()
-			}
-			return a.Name < b.Name
+	for _, l := range loops {
+		slices.SortFunc(l.Callbacks, func(a, b CallbackStat) int {
+			return cmp.Or(cmp.Compare(b.Blocked(), a.Blocked()), strings.Compare(a.Name, b.Name))
 		})
 		out = append(out, *l)
 	}
-	sort.Slice(out, func(i, j int) bool {
-		if out[i].Blocked() != out[j].Blocked() {
-			return out[i].Blocked() > out[j].Blocked()
-		}
-		return out[i].Thread < out[j].Thread
+	slices.SortFunc(out, func(a, b LoopStat) int {
+		return cmp.Or(cmp.Compare(b.Blocked(), a.Blocked()), strings.Compare(a.Thread, b.Thread))
 	})
 	return out
 }

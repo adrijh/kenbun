@@ -2,6 +2,7 @@ package ingest
 
 import (
 	"path"
+	"slices"
 	"time"
 
 	"go.opentelemetry.io/collector/pdata/pcommon"
@@ -48,13 +49,19 @@ func Convert(pd pprofile.Profiles) []store.Sample {
 				samples := prof.Samples()
 				for s := 0; s < samples.Len(); s++ {
 					smp := samples.At(s)
+					frames := r.frames(smp.StackIndex())
+					// Only the LOOP view reads off-CPU time, and only inside an asyncio
+					// loop. Machine-wide it's ~5x the on-CPU rows, so drop the rest.
+					if offCPU && !slices.Contains(frames, store.LoopFrame) {
+						continue
+					}
 					out = append(out, store.Sample{
 						TS:      sampleTime(smp, fallbackTS),
 						Process: process,
 						PID:     pid,
 						Thread:  r.thread(smp),
 						OffCPU:  offCPU,
-						Frames:  r.frames(smp.StackIndex()),
+						Frames:  frames,
 						Weight:  weight(smp),
 					})
 				}

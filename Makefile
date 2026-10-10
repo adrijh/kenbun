@@ -3,9 +3,10 @@
 VERSION   ?= $(shell git describe --tags --always --dirty)
 IMAGE     ?= ghcr.io/adrijh/kenbun
 PLATFORMS ?= linux/amd64,linux/arm64
+DIST      ?= linux/amd64 linux/arm64 darwin/amd64 darwin/arm64
 LDFLAGS   := -s -w -X main.version=$(VERSION)
 
-.PHONY: build install test image push screenshots
+.PHONY: build install test image push dist screenshots
 
 build:
 	CGO_ENABLED=0 go build -trimpath -ldflags "$(LDFLAGS)" -o bin/kenbun .
@@ -23,6 +24,17 @@ image:
 # Multi-arch image to the registry. Needs `docker login ghcr.io` first.
 push:
 	docker buildx build --platform $(PLATFORMS) --build-arg VERSION=$(VERSION) -t $(IMAGE):$(VERSION) --push .
+
+# Release archives in dist/, one per DIST platform. Names carry no version, so
+# releases/latest/download/kenbun_linux_amd64.tar.gz always works.
+dist:
+	rm -rf dist && mkdir dist
+	for p in $(DIST); do \
+		os=$${p%/*}; arch=$${p#*/}; \
+		CGO_ENABLED=0 GOOS=$$os GOARCH=$$arch go build -trimpath -ldflags "$(LDFLAGS)" -o dist/kenbun . && \
+		tar -czf dist/kenbun_$${os}_$${arch}.tar.gz -C dist kenbun && rm dist/kenbun || exit 1; \
+	done
+	cd dist && sha256sum *.tar.gz > checksums.txt
 
 # README screenshots: the real TUI on the test fixtures, as PNGs in docs/.
 # Needs freeze (go install github.com/charmbracelet/freeze@latest) and FONT.

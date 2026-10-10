@@ -52,10 +52,18 @@ And an asyncio event loop: how much of its time callbacks held it, and whether t
 
 ## 始 · Quick start
 
-Build from source (Go 1.27, no cgo):
+Download a release (Linux or macOS, amd64 or arm64):
 
 ```bash
-go install github.com/adrijh/kenbun@latest
+curl -fsSL https://github.com/adrijh/kenbun/releases/latest/download/kenbun_linux_amd64.tar.gz | tar -xz
+sudo install kenbun /usr/local/bin/
+```
+
+Swap in `linux_arm64`, `darwin_arm64` or `darwin_amd64`. On macOS everything works
+except `--profile` and `agent`, which need Linux. Or build from source (Go 1.27):
+
+```bash
+make build    # bin/kenbun
 ```
 
 Profile this machine (Linux 5.10+, amd64 or arm64, root for eBPF):
@@ -127,11 +135,13 @@ Notes:
 to install in the cluster beforehand.
 
 ```bash
-make push                                   # multi-arch image to ghcr.io/adrijh/kenbun:<git describe>
-make build                                  # a binary whose default image is that tag
-./bin/kenbun k8s deploy --context my-cluster
-./bin/kenbun k8s tui --context my-cluster   # port-forwards and opens the TUI
+kenbun k8s deploy --context my-cluster
+kenbun k8s tui --context my-cluster   # port-forwards and opens the TUI
 ```
+
+A release binary deploys the image of its own version. From source, publish a
+matching image first: `make push` (to `ghcr.io/adrijh/kenbun:<git describe>`),
+then `make build`.
 
 `deploy` creates a `kenbun` namespace with:
 
@@ -182,7 +192,12 @@ The profiler needs nodes in the host PID namespace: real nodes, not k3d or kind
 make build    # bin/kenbun
 make test     # go vet + go test
 make image    # local image for this machine's arch
+make dist     # release archives for every platform, in dist/
 ```
+
+Releases come from tags: `git tag v0.1.0 && git push --tags` runs
+`.github/workflows/release.yml`, which tests, attaches `make dist` to a GitHub
+Release and pushes the image as `v0.1.0`.
 
 Tests run on real captures in `internal/ingest/testdata/`: a CPU-heavy Python app
 (`profiles.jsonl`) and the asyncio demo under `--profile` (`asyncio.jsonl.gz`).

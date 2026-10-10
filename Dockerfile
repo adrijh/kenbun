@@ -11,6 +11,8 @@ RUN --mount=type=cache,target=/go/pkg/mod --mount=type=cache,target=/root/.cache
     go build -trimpath -ldflags="-s -w -X main.version=$VERSION" -o /kenbun .
 
 FROM gcr.io/distroless/static-debian12:nonroot
+# Links the ghcr.io package to the repo, so it shows under its Packages.
+LABEL org.opencontainers.image.source=https://github.com/adrijh/kenbun
 COPY --from=build /kenbun /kenbun
 EXPOSE 4317 7070
 ENTRYPOINT ["/kenbun"]

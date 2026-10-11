@@ -3,6 +3,7 @@
 package main
 
 import (
+	"bufio"
 	"cmp"
 	"context"
 	_ "embed"
@@ -35,6 +36,7 @@ import (
 	"go.opentelemetry.io/collector/receiver/otlpreceiver"
 	"go.opentelemetry.io/collector/service/telemetry/otelconftelemetry"
 	profiler "go.opentelemetry.io/ebpf-profiler/collector"
+	"golang.org/x/term"
 
 	"github.com/adrijh/kenbun/internal/api"
 	"github.com/adrijh/kenbun/internal/cli"
@@ -195,6 +197,17 @@ func openFile(ctx context.Context, path string) (st *store.Store, first, last ti
 	return st, first, last, nil
 }
 
+// showTUI opens the TUI on a source other than this machine.
+func showTUI(src *source) error {
+	s, end, span, done, err := src.open(context.Background(), "")
+	if err != nil {
+		return err
+	}
+	defer done()
+	log.SetOutput(io.Discard)
+	return runTUI(tui.New(s, tui.Options{At: end, Window: span}), nil)
+}
+
 // runLocal is the TUI: on a chosen source, or collecting on this machine.
 func runLocal(args []string) error {
 	fs := flags("kenbun")
@@ -215,13 +228,7 @@ func runLocal(args []string) error {
 		if collect {
 			return errors.New("--otlp, --dump and --profile collect on this machine: they don't go with --k8s, --addr or --file")
 		}
-		s, end, span, done, err := src.open(context.Background(), "")
-		if err != nil {
-			return err
-		}
-		defer done()
-		log.SetOutput(io.Discard)
-		return runTUI(tui.New(s, tui.Options{At: end, Window: span}), nil)
+		return showTUI(src)
 	}
 
 	if *profile && runtime.GOOS != "linux" {
@@ -437,11 +444,7 @@ func runK8s(args []string) error {
 
 	switch sub {
 	case "deploy":
-		if err := k8s.Deploy(ctx, o); err != nil {
-			return err
-		}
-		fmt.Println("\nkenbun is running. Open it with: kenbun --k8s")
-		return nil
+		return deploy(ctx, o)
 	case "destroy":
 		return k8s.Destroy(ctx, o)
 	case "manifests":
@@ -453,6 +456,83 @@ func runK8s(args []string) error {
 		return nil
 	}
 	return fmt.Errorf("unknown k8s command %q\n\n%s", sub, usage)
+}
+
+// deploy installs or updates kenbun on a cluster. At a terminal it first asks
+// what to do when kenbun already runs there: on a team, someone usually
+// deployed it already, and updating restarts it, losing everyone's profiles.
+// Scripts and agents (no terminal) just apply.
+func deploy(ctx context.Context, o k8s.Options) error {
+	// 'make push' refuses dirty trees and 'go install' builds are "dev": neither
+	// has an image, and pods would sit in ImagePullBackOff.
+	if t := tag(o.Image); t == "dev" || strings.HasSuffix(t, "-dirty") {
+		return fmt.Errorf("no image exists for this kenbun (%s): commit, 'make push' and 'make build', or pass --image", t)
+	}
+	cluster := &source{k8s: true, kube: k8s.Options{Context: o.Context}}
+	interactive := term.IsTerminal(int(os.Stdin.Fd())) && term.IsTerminal(int(os.Stdout.Fd()))
+	if interactive {
+		d, err := k8s.Status(ctx, o)
+		if err != nil {
+			return err
+		}
+		if d != nil {
+			where := o.Context
+			if where == "" {
+				where = "the current context"
+			}
+			fmt.Printf("kenbun %s is already running on %s (%s)\n\n", tag(d.Image), where, d.Health())
+			fmt.Println("  a  attach: open the TUI (default)")
+			lost := "restarts kenbun, the last 30 min of profiles are lost"
+			act := "u" // update, downgrade or, on the same version, restart
+			switch cmp, ok := k8s.Compare(d.Image, o.Image); {
+			case cmp == 0 && ok:
+				act = "r"
+				fmt.Printf("  r  restart %s: %s\n", tag(o.Image), lost)
+			case cmp > 0 && ok:
+				fmt.Printf("  u  downgrade to %s: the cluster runs %s, you probably want a newer kenbun\n", tag(o.Image), tag(d.Image))
+			default:
+				fmt.Printf("  u  update to %s: %s\n", tag(o.Image), lost)
+			}
+			fmt.Println("  n  nothing")
+			switch ask("\nchoose [a/" + act + "/n]: ") {
+			case "", "a":
+				return showTUI(cluster)
+			case act:
+				if act == "r" {
+					return k8s.Restart(ctx, o)
+				}
+			default:
+				return nil
+			}
+		}
+	}
+
+	if err := k8s.Deploy(ctx, o); err != nil {
+		return err
+	}
+	if interactive {
+		if a := ask("\nkenbun is running. Open it now? [Y/n] "); a == "" || a == "y" {
+			return showTUI(cluster)
+		}
+		return nil
+	}
+	fmt.Println("\nkenbun is running. Open it with: kenbun --k8s")
+	return nil
+}
+
+// ask prints a question and reads a one-word answer, lowercased.
+func ask(q string) string {
+	fmt.Print(q)
+	line, _ := bufio.NewReader(os.Stdin).ReadString('\n')
+	return strings.ToLower(strings.TrimSpace(line))
+}
+
+// tag is an image's tag, the version: ghcr.io/adrijh/kenbun:v0.0.1 → v0.0.1.
+func tag(image string) string {
+	if i := strings.LastIndex(image, ":"); i >= 0 && !strings.Contains(image[i:], "/") {
+		return image[i+1:]
+	}
+	return image
 }
 
 // runTUI runs the TUI and, if given, the collector alongside it. The collector

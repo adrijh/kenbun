@@ -32,3 +32,22 @@ func TestManifestsWithoutProfiler(t *testing.T) {
 		t.Error("want kenbun only")
 	}
 }
+
+func TestCompare(t *testing.T) {
+	const repo = "ghcr.io/adrijh/kenbun:"
+	for _, tc := range []struct {
+		a, b string
+		cmp  int
+		ok   bool
+	}{
+		{repo + "v0.0.1", repo + "v0.0.1", 0, true},
+		{repo + "v0.0.1", repo + "v0.0.2", -1, true},
+		{repo + "v0.10.0", repo + "v0.9.3", 1, true},
+		{repo + "v0.0.1-3-gabc", repo + "v0.0.1", 0, false}, // dev build
+		{"other/kenbun:v0.0.1", repo + "v0.0.2", 0, false},
+	} {
+		if cmp, ok := Compare(tc.a, tc.b); cmp != tc.cmp || ok != tc.ok {
+			t.Errorf("Compare(%s, %s) = %d, %v; want %d, %v", tc.a, tc.b, cmp, ok, tc.cmp, tc.ok)
+		}
+	}
+}

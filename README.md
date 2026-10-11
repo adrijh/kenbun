@@ -201,6 +201,12 @@ A release binary deploys the image of its own version. From source, publish a
 matching image first: `make push` (to `ghcr.io/adrijh/kenbun:<git describe>`),
 then `make build`.
 
+If kenbun already runs there, which on a team usually means a teammate deployed it,
+`deploy` asks first: attach to it (the default), update it (or restart it, on the
+same version), or leave it. Updating restarts kenbun, so the last 30 minutes of
+profiles are lost; it also warns before downgrading a newer kenbun. Without a
+terminal (scripts, CI, agents) it just applies.
+
 `deploy` creates a `kenbun` namespace with:
 
 - **kenbun** (Deployment): `kenbun serve`, receiving OTLP on `kenbun.kenbun.svc:4317`.

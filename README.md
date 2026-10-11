@@ -90,15 +90,61 @@ kenbun view capture.jsonl
 
 | Command | |
 |---|---|
-| `kenbun [--otlp addr] [--dump file] [--profile]` | Receive profiles and open the TUI. `--profile` also runs the eBPF profiler. |
+| `kenbun [--otlp addr] [--dump file] [--profile]` | Receive profiles and open the TUI. `--profile` also runs the eBPF profiler. Same as `kenbun tui`. |
+| `kenbun --addr host:port` | The TUI for a remote `kenbun serve`. |
 | `kenbun view file.jsonl[.gz]` | Open a capture from `--dump` offline. |
-| `kenbun serve [--otlp addr] [--http addr]` | Headless: receive profiles and serve the HTTP API on `:7070`. |
-| `kenbun tui [--addr host:port]` | TUI for a remote `kenbun serve`. |
+| `kenbun serve [--otlp addr] [--http addr] [--profile]` | Headless: receive profiles and serve the HTTP API on `:7070`. |
+| `kenbun top \| functions \| loop \| diff` | One-shot answers for scripts and agents. See [Queries](#問--queries). |
+| `kenbun k8s [--context c]` | The TUI on a cluster. Same as `kenbun k8s tui`. |
+| `kenbun k8s top \| functions \| loop \| diff` | The queries, on a cluster. |
+| `kenbun k8s deploy \| destroy \| manifests` | Run it all in a cluster. See [Kubernetes](#船--kubernetes). |
 | `kenbun agent [--to host:port]` | eBPF profiler for a Kubernetes node, forwarding to kenbun. |
-| `kenbun k8s deploy \| tui \| destroy \| manifests` | Run it all in a cluster. See [Kubernetes](#船--kubernetes). |
 
 The TUI writes its logs (and the collector's) to `$XDG_STATE_HOME/kenbun/kenbun.log`
 
+
+## 問 · Queries
+
+The TUI is for people. Scripts and AI agents get the same analysis as one-shot
+commands that print a few lines of text, or JSON with `--json`:
+
+```text
+$ kenbun k8s top --context my-cluster --limit 4
+all processes · last 5m · 174m CPU · 5066 samples
+
+  CPU  SHARE  PROCESS
+  64m  36.7%  crio
+  34m  19.5%  pmdalinux
+  32m  18.6%  kubelet
+   5m   2.6%  argo-cd/application-controller
+
+$ kenbun loop python3.14 --since 1m
+python3.14 · last 1m
+
+thread python: loop blocked 25.3% (cpu 8.4%, waiting 16.9%), idle 74.7%
+
+  BLOCKED   CPU   WAIT  KIND  CALLBACK
+    16.9%  0.0%  16.9%  wait  sleepy_handler
+     8.4%  8.4%   0.0%   cpu  cpu_handler
+```
+
+| Command | Answers |
+|---|---|
+| `top` | Which processes use the CPU, in millicores and share. |
+| `functions <process>` | Where a process spends it: self (the function itself) and total (with its callees). |
+| `diff <process>` | What changed against the window before, in percentage points, biggest first. |
+| `loop <process>` | Whether asyncio callbacks block the event loop, and if they compute or wait. |
+
+Every query takes `--since` (default `5m`), `--limit` (default `20`) and `--json`.
+`kenbun <query>` asks a `kenbun serve` (`--addr`, default `localhost:7070`; run
+`sudo kenbun serve --profile` to profile the machine), and `kenbun k8s <query>`
+asks the cluster's kenbun through a port-forward. The process name can come before
+or after the flags. Sample counts are in every header: with a few dozen samples,
+small shifts are noise.
+
+The repo ships an agent skill, [`skills/kenbun`](skills/kenbun/SKILL.md), that teaches
+an agent to investigate with these commands. For Claude Code, copy it into your
+skills: `cp -r skills/kenbun ~/.claude/skills/`.
 
 ## 波 · asyncio loop blocking
 
@@ -136,7 +182,8 @@ to install in the cluster beforehand.
 
 ```bash
 kenbun k8s deploy --context my-cluster
-kenbun k8s tui --context my-cluster   # port-forwards and opens the TUI
+kenbun k8s --context my-cluster       # port-forwards and opens the TUI
+kenbun k8s top --context my-cluster   # or ask: see Queries
 ```
 
 A release binary deploys the image of its own version. From source, publish a

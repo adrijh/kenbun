@@ -61,3 +61,31 @@ func TestLabel(t *testing.T) {
 		}
 	}
 }
+
+func TestLines(t *testing.T) {
+	for _, tc := range []struct {
+		lines map[string]int64
+		want  string
+	}{
+		{nil, ""},
+		{map[string]int64{"/app/main.py:18": 5}, "main.py:18"},
+		{map[string]int64{"/app/main.py:16": 71, "/app/main.py:15": 22, "/app/main.py:17": 6, "/app/main.py:30": 1}, "main.py  :16 71% · :15 22% · :17 6%"},
+		{map[string]int64{"/app/main.py:16": 3, "/lib/util.py:9": 1}, "main.py  :16 75% · util.py:9 25%"}, // inlined from another file
+	} {
+		if got := lines(&store.Node{Lines: tc.lines}); got != tc.want {
+			t.Errorf("lines(%v) = %q, want %q", tc.lines, got, tc.want)
+		}
+	}
+}
+
+func TestNameLoc(t *testing.T) {
+	if name, loc := nameLoc("fib", "/app/src/main.py:18", 40); len([]rune(name+loc)) != 40 || loc != "  main.py:18" {
+		t.Errorf("nameLoc wide = %q + %q", name, loc)
+	}
+	if name, loc := nameLoc("fib", "/app/src/main.py:18", 15); loc != "  main.py:18" || name != "fib" {
+		t.Errorf("nameLoc tight = %q + %q, want the name and location side by side", name, loc)
+	}
+	if _, loc := nameLoc("regex_work.<locals>.<genexpr>", "/app/src/main.py:18", 24); loc != "" {
+		t.Errorf("nameLoc should drop the location when narrow, got %q", loc)
+	}
+}

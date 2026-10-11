@@ -33,6 +33,7 @@ type LoopStat struct {
 // CallbackStat is the time one callback (usually a task's coroutine) held the loop.
 type CallbackStat struct {
 	Name      string
+	Loc       string // file:line in the callback where it blocks most; "" if unknown
 	CPU, Wait time.Duration
 }
 
@@ -52,6 +53,7 @@ var asyncioInternal = map[string]bool{
 func Loop(stacks []ThreadStack) []LoopStat {
 	loops := map[string]*LoopStat{}
 	cbs := map[[2]string]*CallbackStat{} // by thread and callback
+	cbLocs := map[[2]string]map[string]time.Duration{}
 	for _, s := range stacks {
 		if !slices.Contains(s.Frames, LoopFrame) {
 			continue
@@ -64,14 +66,17 @@ func Loop(stacks []ThreadStack) []LoopStat {
 		d := s.duration()
 		l.Total += d
 
-		name, ok := callback(s.Frames)
+		i := callback(s.Frames)
 		switch {
-		case ok:
-			k := [2]string{s.Thread, name}
+		case i >= 0:
+			k := [2]string{s.Thread, s.Frames[i]}
 			c := cbs[k]
 			if c == nil {
-				c = &CallbackStat{Name: name}
-				cbs[k] = c
+				c = &CallbackStat{Name: s.Frames[i]}
+				cbs[k], cbLocs[k] = c, map[string]time.Duration{}
+			}
+			if l := loc(s.Locs, i); l != "" {
+				cbLocs[k][l] += d
 			}
 			if s.OffCPU {
 				l.Wait, c.Wait = l.Wait+d, c.Wait+d
@@ -84,6 +89,7 @@ func Loop(stacks []ThreadStack) []LoopStat {
 	}
 
 	for k, c := range cbs {
+		c.Loc = hottest(cbLocs[k])
 		loops[k[0]].Callbacks = append(loops[k[0]].Callbacks, *c)
 	}
 	out := make([]LoopStat, 0, len(loops))
@@ -99,22 +105,23 @@ func Loop(stacks []ThreadStack) []LoopStat {
 	return out
 }
 
-// callback names the callback a stack runs: the first frame below the
-// outermost Handle._run that isn't native or asyncio plumbing.
-func callback(frames []string) (string, bool) {
+// callback finds the callback a stack runs: the first frame below the
+// outermost Handle._run that isn't native or asyncio plumbing. It returns the
+// frame's index, -1 outside callbacks.
+func callback(frames []string) int {
 	i := len(frames) - 1
 	for i >= 0 && frames[i] != "Handle._run" {
 		i--
 	}
 	if i < 0 {
-		return "", false
+		return -1
 	}
 	for j := i - 1; j >= 0; j-- {
 		if f := frames[j]; !strings.HasPrefix(f, "[") && !asyncioInternal[f] {
-			return f, true
+			return j
 		}
 	}
-	return "Handle._run", true // a native callback (e.g. Future.set_result)
+	return i // a native callback (e.g. Future.set_result): Handle._run itself
 }
 
 // isSelect matches selectors' select (_PollLikeSelector.select for epoll,

@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"cmp"
 	"fmt"
 	"hash/fnv"
 	"math"
@@ -223,6 +224,9 @@ func (m model) viewFlame(b *strings.Builder, rows int) {
 	status := accS.Bold(true).Render("◆ "+m.clip(selNode.Name, 60)) +
 		dimS.Render("  total ") + fmt.Sprintf("%.1f%%", pct(selNode.Total, all)) +
 		dimS.Render("  self ") + fmt.Sprintf("%.1f%%", pct(selNode.Self, all))
+	if l := lines(selNode); l != "" {
+		status += dimS.Render("  " + l)
+	}
 	if len(focus) > 1 {
 		status += dimS.Render("  zoom ") + redS.Render(focus[len(focus)-1].Name)
 	}
@@ -298,6 +302,39 @@ func (m model) viewFlame(b *strings.Builder, rows int) {
 }
 
 // fit truncates or pads s to exactly w columns.
+// lines tells where a frame spends its time: "main.py:18", or with several
+// lines its file and the top three, "main.py  :16 71% · :15 22% · :17 7%".
+func lines(n *store.Node) string {
+	type line struct {
+		loc string
+		w   int64
+	}
+	var ls []line
+	var all int64
+	for l, w := range n.Lines {
+		ls = append(ls, line{l, w})
+		all += w
+	}
+	if len(ls) == 0 {
+		return ""
+	}
+	slices.SortFunc(ls, func(a, b line) int { return cmp.Or(cmp.Compare(b.w, a.w), strings.Compare(a.loc, b.loc)) })
+	first := shortLoc(ls[0].loc)
+	if len(ls) == 1 {
+		return first
+	}
+	file := first[:strings.LastIndex(first, ":")]
+	parts := []string{}
+	for _, l := range ls[:min(3, len(ls))] {
+		s := shortLoc(l.loc)
+		if strings.HasPrefix(s, file+":") {
+			s = s[len(file):]
+		}
+		parts = append(parts, fmt.Sprintf("%s %.0f%%", s, pct(l.w, all)))
+	}
+	return file + "  " + strings.Join(parts, " · ")
+}
+
 func fit(s string, w int) string {
 	r := []rune(s)
 	if len(r) > w {

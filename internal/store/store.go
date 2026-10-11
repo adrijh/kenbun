@@ -29,6 +29,7 @@ type Sample struct {
 	Thread  string   // thread.name (the kernel comm), "" if unknown
 	OffCPU  bool     // Weight is nanoseconds blocked (off-CPU probe), not on-CPU samples
 	Frames  []string // leaf first
+	Locs    []string // file:line of each frame, "" if unknown
 	Weight  int64
 }
 
@@ -40,7 +41,8 @@ type ProcStat struct {
 
 // StackWeight is the aggregated weight of one distinct stack.
 type StackWeight struct {
-	Frames []string `json:"frames"` // leaf first
+	Frames []string `json:"frames"`         // leaf first
+	Locs   []string `json:"locs,omitempty"` // file:line per frame, "" if unknown
 	Weight int64    `json:"weight"`
 }
 
@@ -48,7 +50,8 @@ type StackWeight struct {
 type ThreadStack struct {
 	Thread string   `json:"thread"`
 	OffCPU bool     `json:"off_cpu"`
-	Frames []string `json:"frames"` // leaf first
+	Frames []string `json:"frames"`         // leaf first
+	Locs   []string `json:"locs,omitempty"` // file:line per frame, "" if unknown
 	Weight int64    `json:"weight"`
 }
 
@@ -69,7 +72,8 @@ const batchRows = 500
 var BaseSchema = []string{
 	`CREATE TABLE IF NOT EXISTS stacks (
 		stack_id BIGINT PRIMARY KEY,
-		folded   VARCHAR NOT NULL -- frames joined by \x1f, leaf first
+		folded   VARCHAR NOT NULL, -- frames joined by \x1f, leaf first
+		locs     VARCHAR NOT NULL  -- their file:line, joined the same way
 	)`,
 	`CREATE TABLE IF NOT EXISTS samples (
 		ts       BIGINT NOT NULL, -- unix nanoseconds: no timezone handling differences between backends
@@ -124,13 +128,13 @@ func (s *Store) Ingest(ctx context.Context, samples []Sample) error {
 	defer s.mu.Unlock()
 
 	ids := make([]int64, len(samples))
-	newStacks := map[int64]string{}
+	newStacks := map[int64][2]string{}
 	for i, smp := range samples {
-		folded := strings.Join(smp.Frames, sep)
-		id := stackID(folded)
+		folded, locs := strings.Join(smp.Frames, sep), strings.Join(smp.Locs, sep)
+		id := stackID(folded + "\x1e" + locs)
 		ids[i] = id
 		if _, ok := s.seen[id]; !ok {
-			newStacks[id] = folded
+			newStacks[id] = [2]string{folded, locs}
 		}
 	}
 
@@ -141,10 +145,10 @@ func (s *Store) Ingest(ctx context.Context, samples []Sample) error {
 	defer tx.Rollback() // no-op after Commit
 
 	stackRows := make([][]any, 0, len(newStacks))
-	for id, folded := range newStacks {
-		stackRows = append(stackRows, []any{id, folded})
+	for id, st := range newStacks {
+		stackRows = append(stackRows, []any{id, st[0], st[1]})
 	}
-	if err := insertRows(ctx, tx, "INSERT OR IGNORE INTO stacks (stack_id, folded) VALUES ", stackRows); err != nil {
+	if err := insertRows(ctx, tx, "INSERT OR IGNORE INTO stacks (stack_id, folded, locs) VALUES ", stackRows); err != nil {
 		return fmt.Errorf("insert stacks: %w", err)
 	}
 
@@ -260,7 +264,7 @@ func (s *Store) Processes(ctx context.Context, from, to time.Time) ([]ProcStat, 
 // [from, to). This is the input for both Top and the flamegraph.
 func (s *Store) Stacks(ctx context.Context, process string, from, to time.Time) ([]StackWeight, error) {
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT st.folded, a.w
+		SELECT st.folded, st.locs, a.w
 		FROM (
 			SELECT stack_id, sum(weight) AS w
 			FROM samples
@@ -276,12 +280,12 @@ func (s *Store) Stacks(ctx context.Context, process string, from, to time.Time) 
 
 	var out []StackWeight
 	for rows.Next() {
-		var folded string
+		var folded, locs string
 		var w int64
-		if err := rows.Scan(&folded, &w); err != nil {
+		if err := rows.Scan(&folded, &locs, &w); err != nil {
 			return nil, err
 		}
-		out = append(out, StackWeight{Frames: split(folded), Weight: w})
+		out = append(out, StackWeight{Frames: split(folded), Locs: splitLocs(locs), Weight: w})
 	}
 	return out, rows.Err()
 }
@@ -289,7 +293,7 @@ func (s *Store) Stacks(ctx context.Context, process string, from, to time.Time) 
 // ThreadStacks is Stacks per thread, on and off CPU: the input for Loop.
 func (s *Store) ThreadStacks(ctx context.Context, process string, from, to time.Time) ([]ThreadStack, error) {
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT a.thread, a.off_cpu, st.folded, a.w
+		SELECT a.thread, a.off_cpu, st.folded, st.locs, a.w
 		FROM (
 			SELECT thread, off_cpu, stack_id, sum(weight) AS w
 			FROM samples
@@ -306,11 +310,11 @@ func (s *Store) ThreadStacks(ctx context.Context, process string, from, to time.
 	var out []ThreadStack
 	for rows.Next() {
 		var t ThreadStack
-		var folded string
-		if err := rows.Scan(&t.Thread, &t.OffCPU, &folded, &t.Weight); err != nil {
+		var folded, locs string
+		if err := rows.Scan(&t.Thread, &t.OffCPU, &folded, &locs, &t.Weight); err != nil {
 			return nil, err
 		}
-		t.Frames = split(folded)
+		t.Frames, t.Locs = split(folded), splitLocs(locs)
 		out = append(out, t)
 	}
 	return out, rows.Err()
@@ -321,6 +325,33 @@ func split(folded string) []string {
 		return nil
 	}
 	return strings.Split(folded, sep)
+}
+
+// splitLocs is nil when no frame has a location, so JSON leaves it out.
+func splitLocs(locs string) []string {
+	if strings.Trim(locs, sep) == "" {
+		return nil
+	}
+	return strings.Split(locs, sep)
+}
+
+// loc is frame i's file:line, "" if unknown.
+func loc(locs []string, i int) string {
+	if i < len(locs) {
+		return locs[i]
+	}
+	return ""
+}
+
+// hottest is the key with the most weight, "" for none.
+func hottest[W int64 | time.Duration](m map[string]W) string {
+	best, bw := "", W(0)
+	for k, w := range m {
+		if w > bw || (w == bw && k < best) {
+			best, bw = k, w
+		}
+	}
+	return best
 }
 
 // Prune deletes samples older than the cutoff and the stacks no sample uses

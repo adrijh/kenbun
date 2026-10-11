@@ -111,12 +111,13 @@ func Functions(ctx context.Context, q Query, proc string) error {
 	all := total(stacks)
 	type row struct {
 		Function string  `json:"function"`
+		Location string  `json:"location,omitempty"` // file:line of most of its time
 		Self     float64 `json:"self"`
 		Total    float64 `json:"total"`
 	}
 	var rows []row
 	for _, f := range store.Top(stacks, q.Limit) {
-		rows = append(rows, row{f.Name, pct(f.Self, all), pct(f.Total, all)})
+		rows = append(rows, row{f.Name, f.Loc, pct(f.Self, all), pct(f.Total, all)})
 	}
 	if q.JSON {
 		return q.json(struct {
@@ -133,7 +134,7 @@ func Functions(ctx context.Context, q Query, proc string) error {
 		return nil
 	}
 	return table(q.Out, "SELF\tTOTAL\t  FUNCTION", rows, func(r row) string {
-		return fmt.Sprintf("%.1f%%\t%.1f%%\t  %s", r.Self, r.Total, r.Function)
+		return fmt.Sprintf("%.1f%%\t%.1f%%\t  %s", r.Self, r.Total, at(r.Function, r.Location))
 	})
 }
 
@@ -156,6 +157,7 @@ func Diff(ctx context.Context, q Query, proc string) error {
 	}
 	type row struct {
 		Function   string  `json:"function"`
+		Location   string  `json:"location,omitempty"`
 		Self       float64 `json:"self"`
 		Total      float64 `json:"total"`
 		DeltaSelf  float64 `json:"delta_self"`
@@ -167,7 +169,7 @@ func Diff(ctx context.Context, q Query, proc string) error {
 		p := before[name]
 		seen[name] = true
 		self, tot := pct(f.Self, curN), pct(f.Total, curN)
-		rows = append(rows, row{name, self, tot, round(self - pct(p.Self, prevN)), round(tot - pct(p.Total, prevN))})
+		rows = append(rows, row{name, cmp.Or(f.Loc, p.Loc), self, tot, round(self - pct(p.Self, prevN)), round(tot - pct(p.Total, prevN))})
 	}
 	for _, f := range store.Top(cur, 0) {
 		add(f.Name, f)
@@ -200,7 +202,7 @@ func Diff(ctx context.Context, q Query, proc string) error {
 		return nil
 	}
 	return table(q.Out, "ΔSELF\tΔTOTAL\tSELF\tTOTAL\t  FUNCTION", rows, func(r row) string {
-		return fmt.Sprintf("%+.1f\t%+.1f\t%.1f%%\t%.1f%%\t  %s", r.DeltaSelf, r.DeltaTotal, r.Self, r.Total, r.Function)
+		return fmt.Sprintf("%+.1f\t%+.1f\t%.1f%%\t%.1f%%\t  %s", r.DeltaSelf, r.DeltaTotal, r.Self, r.Total, at(r.Function, r.Location))
 	})
 }
 
@@ -214,7 +216,8 @@ func Loop(ctx context.Context, q Query, proc string) error {
 	}
 	type callback struct {
 		Callback string  `json:"callback"`
-		Blocked  float64 `json:"blocked"` // % of loop time
+		Location string  `json:"location,omitempty"` // file:line where it blocks most
+		Blocked  float64 `json:"blocked"`            // % of loop time
 		CPU      float64 `json:"cpu"`
 		Wait     float64 `json:"wait"`
 		Kind     string  `json:"kind"` // what dominates: cpu or wait
@@ -236,7 +239,7 @@ func Loop(ctx context.Context, q Query, proc string) error {
 			if c.Wait > c.CPU {
 				kind = "wait"
 			}
-			out.Callbacks = append(out.Callbacks, callback{c.Name, share(c.Blocked()), share(c.CPU), share(c.Wait), kind})
+			out.Callbacks = append(out.Callbacks, callback{c.Name, c.Loc, share(c.Blocked()), share(c.CPU), share(c.Wait), kind})
 		}
 		loops = append(loops, out)
 	}
@@ -256,7 +259,7 @@ func Loop(ctx context.Context, q Query, proc string) error {
 		fmt.Fprintf(q.Out, "\nthread %s: loop blocked %.1f%% (cpu %.1f%%, waiting %.1f%%), idle %.1f%%\n\n",
 			l.Thread, l.Blocked, l.CPU, l.Wait, l.Idle)
 		if err := table(q.Out, "BLOCKED\tCPU\tWAIT\tKIND\t  CALLBACK", l.Callbacks, func(c callback) string {
-			return fmt.Sprintf("%.1f%%\t%.1f%%\t%.1f%%\t%s\t  %s", c.Blocked, c.CPU, c.Wait, c.Kind, c.Callback)
+			return fmt.Sprintf("%.1f%%\t%.1f%%\t%.1f%%\t%s\t  %s", c.Blocked, c.CPU, c.Wait, c.Kind, at(c.Callback, c.Location))
 		}); err != nil {
 			return err
 		}
@@ -274,6 +277,14 @@ func since(d time.Duration) string {
 		s = strings.TrimSuffix(s, "0m")
 	}
 	return s
+}
+
+// at is "name (file:line)", like py-spy, or just the name.
+func at(name, loc string) string {
+	if loc == "" {
+		return name
+	}
+	return name + " (" + loc + ")"
 }
 
 func (q Query) json(v any) error {

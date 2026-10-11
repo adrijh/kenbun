@@ -56,7 +56,10 @@ kenbun k8s functions crio --since 15m --limit 0 --json |
 2. `functions <process>`: **self** is time in the function itself, **total**
    includes what it calls. High self is where CPU burns; high total with low self
    is a caller on the way there. Read down until names say something about the
-   program, not the runtime.
+   program, not the runtime. Python and Go functions come with the line most of
+   their time is on, `fib (/app/src/main.py:18)`: open that file there. Paths are
+   as seen on the profiled machine (inside the container), so map them onto the
+   repo by their tail.
 3. If it got worse: `diff <process>` with `--since` about how long ago it started.
    Deltas are percentage points of the process's CPU, biggest first; the header
    has CPU before → after.
@@ -90,7 +93,8 @@ stalls every other request. `loop` reports, per loop thread:
 - **idle %**: the loop waiting for work. High idle with high latency points away
   from the loop (downstream calls, too few workers).
 - **callbacks**: blocking time charged to the coroutine or callback that held the
-  loop, normally the request handler.
+  loop, normally the request handler, with the line in it where it blocks most:
+  for **wait** that is usually the blocking call itself (`time.sleep(...)`).
 
 What to recommend: for **wait**, await an async equivalent or move the call to
 `asyncio.to_thread()` / an executor; for **cpu**, split the work, or move it to

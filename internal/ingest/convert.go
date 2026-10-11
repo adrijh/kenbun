@@ -3,6 +3,7 @@ package ingest
 import (
 	"path"
 	"slices"
+	"strconv"
 	"time"
 
 	"go.opentelemetry.io/collector/pdata/pcommon"
@@ -49,7 +50,7 @@ func Convert(pd pprofile.Profiles) []store.Sample {
 				samples := prof.Samples()
 				for s := 0; s < samples.Len(); s++ {
 					smp := samples.At(s)
-					frames := r.frames(smp.StackIndex())
+					frames, locs := r.frames(smp.StackIndex())
 					// Only the LOOP view reads off-CPU time, and only inside an asyncio
 					// loop. Machine-wide it's ~5x the on-CPU rows, so drop the rest.
 					if offCPU && !slices.Contains(frames, store.LoopFrame) {
@@ -62,6 +63,7 @@ func Convert(pd pprofile.Profiles) []store.Sample {
 						Thread:  r.thread(smp),
 						OffCPU:  offCPU,
 						Frames:  frames,
+						Locs:    locs,
 						Weight:  weight(smp),
 					})
 				}
@@ -123,38 +125,41 @@ func sampleTime(s pprofile.Sample, fallback time.Time) time.Time {
 	return fallback.UTC()
 }
 
-// resolver turns stack indices into frame names, caching per batch:
-// many samples in a batch share the same stack.
+// resolver turns stack indices into frames, caching per batch: many samples
+// in a batch share the same stack.
 type resolver struct {
 	d     pprofile.ProfilesDictionary
-	cache map[int32][]string
+	cache map[int32]stack
 }
+
+type stack struct{ frames, locs []string }
 
 func newResolver(d pprofile.ProfilesDictionary) *resolver {
-	return &resolver{d: d, cache: map[int32][]string{}}
+	return &resolver{d: d, cache: map[int32]stack{}}
 }
 
-// frames returns function names, leaf first. Index 0 in every dictionary
-// table is an empty placeholder, so it's treated as "missing".
-func (r *resolver) frames(stackIdx int32) []string {
-	if f, ok := r.cache[stackIdx]; ok {
-		return f
+// frames returns function names and their file:line ("" if unknown, as for
+// native code), leaf first. Index 0 in every dictionary table is an empty
+// placeholder, so it's treated as "missing".
+func (r *resolver) frames(stackIdx int32) (frames, locs []string) {
+	if s, ok := r.cache[stackIdx]; ok {
+		return s.frames, s.locs
 	}
 
 	stacks := r.d.StackTable()
 	if stackIdx <= 0 || int(stackIdx) >= stacks.Len() {
-		return nil
+		return nil, nil
 	}
-	locs, fns, maps := r.d.LocationTable(), r.d.FunctionTable(), r.d.MappingTable()
+	locations, fns, maps := r.d.LocationTable(), r.d.FunctionTable(), r.d.MappingTable()
 
 	locIdx := stacks.At(int(stackIdx)).LocationIndices()
-	out := make([]string, 0, locIdx.Len())
+	frames, locs = make([]string, 0, locIdx.Len()), make([]string, 0, locIdx.Len())
 	for i := 0; i < locIdx.Len(); i++ {
 		li := int(locIdx.At(i))
-		if li <= 0 || li >= locs.Len() {
+		if li <= 0 || li >= locations.Len() {
 			continue
 		}
-		loc := locs.At(li)
+		loc := locations.At(li)
 		lines := loc.Lines()
 
 		if lines.Len() == 0 {
@@ -166,27 +171,32 @@ func (r *resolver) frames(stackIdx int32) []string {
 					name = "[" + path.Base(f) + "]"
 				}
 			}
-			if n := len(out); n > 0 && out[n-1] == name {
+			if n := len(frames); n > 0 && frames[n-1] == name {
 				continue
 			}
-			out = append(out, name)
+			frames, locs = append(frames, name), append(locs, "")
 			continue
 		}
 
 		// Inlined frames: Lines()[0] is the innermost.
 		for j := 0; j < lines.Len(); j++ {
-			name := "??"
+			name, where := "??", ""
 			if fi := int(lines.At(j).FunctionIndex()); fi > 0 && fi < fns.Len() {
-				if n := r.str(fns.At(fi).NameStrindex()); n != "" {
+				fn := fns.At(fi)
+				if n := r.str(fn.NameStrindex()); n != "" {
 					name = n
 				}
+				// Only with a line: some native frames carry a bogus file.
+				if f, l := r.str(fn.FilenameStrindex()), lines.At(j).Line(); f != "" && l > 0 {
+					where = f + ":" + strconv.FormatInt(l, 10)
+				}
 			}
-			out = append(out, name)
+			frames, locs = append(frames, name), append(locs, where)
 		}
 	}
 
-	r.cache[stackIdx] = out
-	return out
+	r.cache[stackIdx] = stack{frames, locs}
+	return frames, locs
 }
 
 // thread returns the sample's thread.name (the kernel comm), or "".

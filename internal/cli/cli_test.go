@@ -64,15 +64,15 @@ func TestCommands(t *testing.T) {
 	if s := run("top", func() error { return Top(ctx, q) }); !strings.Contains(s, "74.1%  python3.14") {
 		t.Errorf("top lacks python3.14 at 74.1%%")
 	}
-	if s := run("functions", func() error { return Functions(ctx, q, "python3.14") }); !strings.Contains(s, "37.8%  fib") {
-		t.Errorf("functions lacks fib at 37.8%% total")
+	if s := run("functions", func() error { return Functions(ctx, q, "python3.14") }); !strings.Contains(s, "37.8%  fib (/app/src/myapp/main.py:18)") {
+		t.Errorf("functions lacks fib at 37.8%% total, at main.py:18")
 	}
 	if s := run("diff", func() error { return Diff(ctx, q, "python3.14") }); !strings.Contains(s, "nothing to compare") {
 		t.Errorf("diff with an empty previous window should say so")
 	}
 
 	q, out = fixture(t, "asyncio.jsonl.gz")
-	if s := run("loop", func() error { return Loop(ctx, q, "python3.14") }); !strings.Contains(s, "wait  sleepy_handler") ||
+	if s := run("loop", func() error { return Loop(ctx, q, "python3.14") }); !strings.Contains(s, "wait  sleepy_handler (") || !strings.Contains(s, "asyncio_demo.py:30)") ||
 		!strings.Contains(s, "cpu  cpu_handler") {
 		t.Errorf("loop: want sleepy_handler waiting and cpu_handler on CPU")
 	}

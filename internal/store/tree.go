@@ -7,7 +7,8 @@ type Node struct {
 	Name     string
 	Self     int64
 	Total    int64
-	Children []*Node // heaviest first
+	Lines    map[string]int64 // Total by the file:line this frame was on; nil if unknown
+	Children []*Node          // heaviest first
 
 	byName map[string]*Node // build-time child lookup
 }
@@ -22,6 +23,12 @@ func Tree(stacks []StackWeight) *Node {
 		for i := len(st.Frames) - 1; i >= 0; i-- {
 			n = n.child(st.Frames[i])
 			n.Total += st.Weight
+			if l := loc(st.Locs, i); l != "" {
+				if n.Lines == nil {
+					n.Lines = map[string]int64{}
+				}
+				n.Lines[l] += st.Weight
+			}
 		}
 		n.Self += st.Weight
 	}

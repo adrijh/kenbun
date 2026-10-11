@@ -124,16 +124,16 @@ python3.14 · last 1m
 thread python: loop blocked 25.3% (cpu 8.4%, waiting 16.9%), idle 74.7%
 
   BLOCKED   CPU   WAIT  KIND  CALLBACK
-    16.9%  0.0%  16.9%  wait  sleepy_handler
-     8.4%  8.4%   0.0%   cpu  cpu_handler
+    16.9%  0.0%  16.9%  wait  sleepy_handler (/app/asyncio_demo.py:30)
+     8.4%  8.4%   0.0%   cpu  cpu_handler (/app/asyncio_demo.py:35)
 ```
 
 | Command | Answers |
 |---|---|
 | `top` | Which processes use the CPU, in millicores and share. |
-| `functions <process>` | Where a process spends it: self (the function itself) and total (with its callees). |
+| `functions <process>` | Where a process spends it: self (the function itself) and total (with its callees), with each function's hottest `file:line`. |
 | `diff <process>` | What changed against the window before, in percentage points, biggest first. |
-| `loop <process>` | Whether asyncio callbacks block the event loop, and if they compute or wait. |
+| `loop <process>` | Whether asyncio callbacks block the event loop, if they compute or wait, and on which line. |
 
 Every query takes `--since` (default `5m`), `--limit` (default `20`) and `--json`.
 `kenbun <query>` asks a `kenbun serve` (`--addr`, default `localhost:7070`; run

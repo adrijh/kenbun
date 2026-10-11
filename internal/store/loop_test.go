@@ -68,8 +68,13 @@ func TestCallback(t *testing.T) {
 		{[]string{"[libpython]", "Handle._run"}, "Handle._run", true},
 		{[]string{"_PollLikeSelector.select", "BaseEventLoop._run_once"}, "", false},
 	} {
-		if got, ok := callback(tc.frames); got != tc.want || ok != tc.ok {
-			t.Errorf("callback(%v) = %q, %v; want %q, %v", tc.frames, got, ok, tc.want, tc.ok)
+		i := callback(tc.frames)
+		got := ""
+		if i >= 0 {
+			got = tc.frames[i]
+		}
+		if got != tc.want || (i >= 0) != tc.ok {
+			t.Errorf("callback(%v) = %d (%q); want %q, %v", tc.frames, i, got, tc.want, tc.ok)
 		}
 	}
 }

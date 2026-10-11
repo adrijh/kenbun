@@ -3,6 +3,7 @@ package tui
 import (
 	"fmt"
 	"math"
+	"path"
 	"strings"
 	"time"
 
@@ -224,6 +225,13 @@ func (m model) viewTop(b *strings.Builder, rows int) {
 
 	nameW := max(8, m.width()-lipgloss.Width(head)+len("FUNCTION"))
 	start := max(0, m.tcur-rows+1)
+	// Locations line up right after the longest name on screen, not at the
+	// far edge of a wide terminal.
+	longest := 0
+	for _, f := range m.top[start:min(len(m.top), start+rows)] {
+		longest = max(longest, len([]rune(f.Name))+2+len([]rune(shortLoc(f.Loc))))
+	}
+	nameW = min(nameW, longest)
 	for i := start; i < min(len(m.top), start+rows); i++ {
 		f := m.top[i]
 		self, tot := pct(f.Self, total), pct(f.Total, total)
@@ -235,18 +243,18 @@ func (m model) viewTop(b *strings.Builder, rows int) {
 			deltas = m.delta(self-pct(p.Self, m.prevN), isSel) + " " + m.delta(tot-pct(p.Total, m.prevN), isSel) + " "
 		}
 		solid, shade := splitBar(self/100, tot/100, barW)
-		name := fit(f.Name, nameW)
+		name, loc := nameLoc(f.Name, f.Loc, nameW)
 		cols := fmt.Sprintf("%5.1f%% %6.1f%% ", self, tot)
 
 		if isSel {
-			b.WriteString(selS.Render("▶ "+cols+deltas+" "+solid+shade+"  "+name) + "\n")
+			b.WriteString(selS.Render("▶ "+cols+deltas+" "+solid+shade+"  "+name+loc) + "\n")
 			continue
 		}
 		nameS := lipgloss.NewStyle()
 		if strings.HasPrefix(f.Name, "[") { // native frames: context, rarely the culprit
 			nameS = dimS
 		}
-		b.WriteString("  " + cols + deltas + " " + heat(self).Render(solid) + ruleS.Render(shade) + "  " + nameS.Render(name) + "\n")
+		b.WriteString("  " + cols + deltas + " " + heat(self).Render(solid) + ruleS.Render(shade) + "  " + nameS.Render(name) + dimS.Render(loc) + "\n")
 	}
 }
 
@@ -286,6 +294,26 @@ func (m model) viewLoop(b *strings.Builder, rows int) {
 		b.WriteString("\n")
 		rows--
 	}
+}
+
+// nameLoc fits a function name into w columns with its location at the right
+// edge. The location goes first when the name would be cut below 16 columns.
+func nameLoc(name, loc string, w int) (string, string) {
+	l := shortLoc(loc)
+	room := w - len([]rune(l)) - 2
+	if l == "" || (room < len([]rune(name)) && room < 16) {
+		return fit(name, w), ""
+	}
+	return fit(name, room), "  " + l
+}
+
+// shortLoc is file:line with the file's directories left out.
+func shortLoc(loc string) string {
+	i := strings.LastIndex(loc, ":")
+	if i < 0 {
+		return loc
+	}
+	return path.Base(loc[:i]) + loc[i:]
 }
 
 // delta formats a change in percentage points: ▲ pink = more CPU than before.

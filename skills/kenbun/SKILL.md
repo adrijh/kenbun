@@ -1,6 +1,6 @@
 ---
 name: kenbun
-description: Investigate CPU usage and asyncio event-loop blocking with kenbun's query commands (kenbun top, functions, diff, loop, and kenbun k8s <query> on a Kubernetes cluster). Use this whenever someone asks what is eating CPU on a machine or cluster, why a service, pod or process is slow or got slower (after a deploy, under load), where a process spends its time, or whether a Python asyncio app blocks its event loop, and kenbun is installed or deployed, even if they don't name kenbun or say "profile".
+description: Investigate CPU usage and asyncio event-loop blocking with kenbun's query commands (kenbun top, functions, diff, loop; --k8s for a Kubernetes cluster, --file for a capture). Use this whenever someone asks what is eating CPU on a machine or cluster, why a service, pod or process is slow or got slower (after a deploy, under load), where a process spends its time, or whether a Python asyncio app blocks its event loop, and kenbun is installed or deployed, even if they don't name kenbun or say "profile".
 ---
 
 # Investigating with kenbun
@@ -8,18 +8,24 @@ description: Investigate CPU usage and asyncio event-loop blocking with kenbun's
 kenbun keeps a rolling 30 minutes of CPU profiles (from an eBPF profiler on every
 node, or from OTLP senders) and answers questions about them in a few lines. Every
 query is one command; read its output, then decide the next one. Don't open the
-TUI (`kenbun`, `kenbun k8s` with no query): it is interactive and made for people.
+TUI (`kenbun` with no query): it is interactive and made for people.
 
 ## Where the data is
 
-- **A cluster:** `kenbun k8s <query> --context <ctx>` port-forwards to the kenbun
-  that `kenbun k8s deploy` installed. Leave out `--context` for the current one.
-  "connection refused"/"port-forward" errors mean it isn't deployed there: ask
-  before running `kenbun k8s deploy`, it installs a privileged DaemonSet.
-- **This machine:** `kenbun <query>` asks a `kenbun serve` on `localhost:7070`
-  (`--addr` for another). Profiling the machine needs root, so if nothing answers,
-  ask the user to start `sudo kenbun serve --profile` rather than running sudo
-  yourself, and give it a minute to collect.
+Every query takes one source flag; pick it once and keep it on every command.
+
+- **A cluster:** `--k8s` (current kubeconfig context) or `--context <ctx>`
+  port-forwards to the kenbun that `kenbun k8s deploy` installed. "port-forward"
+  errors mean it isn't deployed there: ask before running `kenbun k8s deploy`,
+  it installs a privileged DaemonSet.
+- **This machine:** no flag. It asks the kenbun running here: the user's TUI
+  (`kenbun`) or a headless `kenbun serve`. Profiling the machine needs root, so if
+  nothing answers, ask the user to start `sudo kenbun --profile` (or
+  `sudo kenbun serve --profile`) rather than running sudo yourself, and give it a
+  minute to collect.
+- **A capture:** `--file capture.jsonl[.gz]` (from `kenbun --dump`), offline;
+  `--since` counts back from its end.
+- **Another kenbun:** `--addr host:port`.
 
 ## The queries
 
@@ -44,7 +50,7 @@ them and sort by total, which surfaces the program's call path (kernel frames
 remain, recognizable by their names):
 
 ```bash
-kenbun k8s functions crio --since 15m --limit 0 --json |
+kenbun functions crio --k8s --since 15m --limit 0 --json |
   jq -r '.functions | sort_by(-.total)[] | select(.function | test("^(runtime|internal|syscall|sync)\\.|^\\[") | not)
          | "\(.self)\t\(.total)\t\(.function)"' | head -30
 ```

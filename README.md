@@ -83,22 +83,33 @@ Keep a capture and read it later
 
 ```bash
 sudo kenbun --profile --dump capture.jsonl
-kenbun view capture.jsonl
+kenbun --file capture.jsonl
 ```
 
 ## 道 · Commands
 
+Two ways to look at profiles, the TUI and one-shot queries, and one way to say
+where they are:
+
 | Command | |
 |---|---|
-| `kenbun [--otlp addr] [--dump file] [--profile]` | Receive profiles and open the TUI. `--profile` also runs the eBPF profiler. Same as `kenbun tui`. |
-| `kenbun --addr host:port` | The TUI for a remote `kenbun serve`. |
-| `kenbun view file.jsonl[.gz]` | Open a capture from `--dump` offline. |
-| `kenbun serve [--otlp addr] [--http addr] [--profile]` | Headless: receive profiles and serve the HTTP API on `:7070`. |
-| `kenbun top \| functions \| loop \| diff` | One-shot answers for scripts and agents. See [Queries](#問--queries). |
-| `kenbun k8s [--context c]` | The TUI on a cluster. Same as `kenbun k8s tui`. |
-| `kenbun k8s top \| functions \| loop \| diff` | The queries, on a cluster. |
-| `kenbun k8s deploy \| destroy \| manifests` | Run it all in a cluster. See [Kubernetes](#船--kubernetes). |
-| `kenbun agent [--to host:port]` | eBPF profiler for a Kubernetes node, forwarding to kenbun. |
+| `kenbun [source]` | The TUI. |
+| `kenbun top \| functions \| diff \| loop [source]` | One-shot answers for scripts and agents. See [Queries](#問--queries). |
+
+| Source | Where the profiles are |
+|---|---|
+| *(none)* | This machine: the TUI collects them, and queries ask the kenbun running here. |
+| `--k8s [--context c]` | The cluster's kenbun, through a `kubectl` port-forward. |
+| `--addr host:port` | A kenbun elsewhere (`kenbun serve`). |
+| `--file capture.jsonl` | A capture from `--dump`, offline (`.jsonl.gz` too). |
+
+Collecting on this machine:
+
+| Command | |
+|---|---|
+| `kenbun [--profile] [--otlp addr] [--dump file]` | Receive profiles (`--profile`: also run the eBPF profiler) and open the TUI. It also answers queries on `localhost:7070`, so an agent can ask about what you're watching. |
+| `kenbun serve [--profile] [--otlp addr] [--dump file] [--http addr]` | The same without the TUI, for headless boxes. |
+| `kenbun k8s deploy \| destroy \| manifests` | Set kenbun up on a cluster. See [Kubernetes](#船--kubernetes). |
 
 The TUI writes its logs (and the collector's) to `$XDG_STATE_HOME/kenbun/kenbun.log`
 
@@ -109,7 +120,7 @@ The TUI is for people. Scripts and AI agents get the same analysis as one-shot
 commands that print a few lines of text, or JSON with `--json`:
 
 ```text
-$ kenbun k8s top --context my-cluster --limit 4
+$ kenbun top --k8s --limit 4
 all processes · last 5m · 174m CPU · 5066 samples
 
   CPU  SHARE  PROCESS
@@ -135,11 +146,11 @@ thread python: loop blocked 25.3% (cpu 8.4%, waiting 16.9%), idle 74.7%
 | `diff <process>` | What changed against the window before, in percentage points, biggest first. |
 | `loop <process>` | Whether asyncio callbacks block the event loop, if they compute or wait, and on which line. |
 
-Every query takes `--since` (default `5m`), `--limit` (default `20`) and `--json`.
-`kenbun <query>` asks a `kenbun serve` (`--addr`, default `localhost:7070`; run
-`sudo kenbun serve --profile` to profile the machine), and `kenbun k8s <query>`
-asks the cluster's kenbun through a port-forward. The process name can come before
-or after the flags. Sample counts are in every header: with a few dozen samples,
+Every query takes a [source](#道--commands), `--since` (default `5m`), `--limit`
+(default `20`) and `--json`. Without a source they ask the kenbun running on this
+machine (`kenbun`, or `sudo kenbun serve --profile` headless). On a `--file`
+capture, `--since` counts back from its end. The process name can come before or
+after the flags. Sample counts are in every header: with a few dozen samples,
 small shifts are noise.
 
 The repo ships an agent skill, [`skills/kenbun`](skills/kenbun/SKILL.md), that teaches
@@ -182,8 +193,8 @@ to install in the cluster beforehand.
 
 ```bash
 kenbun k8s deploy --context my-cluster
-kenbun k8s --context my-cluster       # port-forwards and opens the TUI
-kenbun k8s top --context my-cluster   # or ask: see Queries
+kenbun --context my-cluster           # port-forwards and opens the TUI
+kenbun top --context my-cluster       # or ask: see Queries
 ```
 
 A release binary deploys the image of its own version. From source, publish a
@@ -222,7 +233,7 @@ The profiler needs nodes in the host PID namespace: real nodes, not k3d or kind
 - **Store.** Portable SQL through `database/sql` on a pure-Go SQLite. The database
   filters and sums; self/total, flame trees and loop analysis happen in Go. Samples
   older than 30 minutes and the stacks nobody uses any more are pruned every 30s.
-- **API.** `kenbun serve` exposes the store over HTTP, and the TUI reads it the same
+- **API.** `kenbun serve` (and the local TUI, on `localhost:7070`) exposes the store over HTTP, and the TUI reads it the same
   way it reads the local store:
 
   ```text

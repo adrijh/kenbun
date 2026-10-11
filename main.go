@@ -59,30 +59,32 @@ const retention = 30 * time.Minute // largest TUI window (15m) plus its diff bas
 
 const usage = `kenbun: OTLP profiles in your terminal
 
-  kenbun [tui] [--otlp addr] [--dump file.jsonl] [--profile]
-                                             receive profiles and show the TUI; --profile also
-                                             profiles this machine (eBPF: Linux, root)
-  kenbun [tui] --addr host:port              TUI for a remote 'kenbun serve'
-  kenbun view file.jsonl[.gz]                show a capture (from --dump) offline
-  kenbun serve [--otlp addr] [--http addr] [--profile]
-                                             receive profiles and serve the HTTP API
+  kenbun [source]                               the TUI
+  kenbun top [source] [flags]                   processes by CPU
+  kenbun functions <process> [source] [flags]   a process's hottest functions, self and total
+  kenbun diff <process> [source] [flags]        functions that changed vs the window before
+  kenbun loop <process> [source] [flags]        asyncio event loop: blocked %, callbacks cpu vs wait
+      flags: --since 5m, --limit 20, --json
 
-  kenbun top [--since 5m] [--limit 20] [--json] [--addr host:port]
-                                             processes by CPU, from a 'kenbun serve'
-  kenbun functions <process> [flags]         a process's hottest functions, self and total
-  kenbun loop <process> [flags]              asyncio event loop: blocked %, callbacks cpu vs wait
-  kenbun diff <process> [flags]              functions that changed vs the window before
+  source, where the profiles are (the same for every command above):
+      (none)                  this machine: the TUI collects them; queries ask the kenbun running here
+      --k8s [--context c]     the cluster's kenbun, through a port-forward
+      --addr host:port        a kenbun elsewhere ('kenbun serve')
+      --file capture.jsonl    a capture from --dump, offline (.jsonl.gz too)
 
-  kenbun k8s [tui] [--context c]             port-forward to the cluster and open the TUI
-  kenbun k8s top|functions|loop|diff [--context c] [flags]
-                                             the queries above, on the cluster
+  collecting on this machine:
+      kenbun [--profile] [--otlp addr] [--dump file]
+                              with the TUI, which also serves queries on localhost:7070
+      kenbun serve [--profile] [--otlp addr] [--dump file] [--http addr]
+                              headless
+      --profile runs the eBPF profiler on every process here (Linux, root)
+
   kenbun k8s deploy [--context c] [--image i] [--profiler=false]
-                                             install kenbun + eBPF profiler (kubectl apply)
-  kenbun k8s destroy [--context c]           remove everything deploy created
+                              install kenbun + the eBPF profiler (kubectl apply)
+  kenbun k8s destroy [--context c]
+                              remove everything deploy created
   kenbun k8s manifests [--image i] [--profiler=false]
-                                             print the manifests instead
-  kenbun agent [--to host:port]              eBPF profiler on a k8s node, pushing to kenbun
-                                             (the DaemonSet 'k8s deploy' creates)
+                              print the manifests instead
 `
 
 func main() {
@@ -92,18 +94,16 @@ func main() {
 	}
 	var err error
 	switch cmd {
-	case "", "tui":
+	case "":
 		err = runLocal(args)
-	case "view":
-		err = runView(args)
+	case "top", "functions", "diff", "loop":
+		err = runQuery(cmd, args)
 	case "serve":
 		err = runServe(args)
-	case "top", "functions", "loop", "diff":
-		err = runQuery(cmd, args)
-	case "agent":
-		err = runAgent(args)
 	case "k8s":
 		err = runK8s(args)
+	case "agent": // the DaemonSet's entrypoint, not for people
+		err = runAgent(args)
 	default:
 		err = fmt.Errorf("unknown command %q\n\n%s", cmd, usage)
 	}
@@ -122,19 +122,108 @@ func flags(name string) *flag.FlagSet {
 	return fs
 }
 
+// source is where the profiles are: the flags the TUI and every query share.
+type source struct {
+	k8s  bool
+	kube k8s.Options
+	addr string
+	file string
+}
+
+func sourceFlags(fs *flag.FlagSet) *source {
+	s := &source{}
+	fs.BoolVar(&s.k8s, "k8s", false, "read the cluster's kenbun, through a kubectl port-forward")
+	fs.StringVar(&s.kube.Context, "context", "", "kubeconfig context for --k8s (default: current); implies --k8s")
+	fs.StringVar(&s.addr, "addr", "", "read the kenbun at host:port")
+	fs.StringVar(&s.file, "file", "", "read a capture from --dump (.jsonl, .jsonl.gz)")
+	return s
+}
+
+func (s *source) chosen() bool { return s.k8s || s.kube.Context != "" || s.addr != "" || s.file != "" }
+
+// open connects to the source, or to the kenbun at local if none was chosen.
+// For a capture, end is where it ends and span how long it lasts.
+func (s *source) open(ctx context.Context, local string) (src cli.Source, end time.Time, span time.Duration, done func(), err error) {
+	n := 0
+	for _, set := range []bool{s.k8s || s.kube.Context != "", s.addr != "", s.file != ""} {
+		if set {
+			n++
+		}
+	}
+	if n > 1 {
+		return nil, end, 0, nil, errors.New("pick one source: --k8s, --addr or --file")
+	}
+	switch {
+	case s.file != "":
+		st, first, last, err := openFile(ctx, s.file)
+		if err != nil {
+			return nil, end, 0, nil, err
+		}
+		return st, last.Add(time.Nanosecond), last.Sub(first), func() { st.Close() }, nil
+	case s.k8s || s.kube.Context != "":
+		addr, stop, err := k8s.PortForward(ctx, s.kube)
+		if err != nil {
+			return nil, end, 0, nil, err
+		}
+		return api.NewClient(addr), end, 0, stop, nil
+	case s.addr != "":
+		return api.NewClient(s.addr), end, 0, func() {}, nil
+	}
+	return api.NewClient(local), end, 0, func() {}, nil
+}
+
+// openFile loads a --dump capture into a fresh in-memory store.
+func openFile(ctx context.Context, path string) (st *store.Store, first, last time.Time, err error) {
+	samples, err := ingest.ReadJSONL(path)
+	if err != nil {
+		return nil, first, last, err
+	}
+	if len(samples) == 0 {
+		return nil, first, last, fmt.Errorf("%s: no samples", path)
+	}
+	if st, err = sqlite.Open(""); err != nil {
+		return nil, first, last, err
+	}
+	if err := st.Ingest(ctx, samples); err != nil {
+		st.Close()
+		return nil, first, last, err
+	}
+	first, last = samples[0].TS, samples[0].TS
+	for _, s := range samples {
+		first, last = minTime(first, s.TS), maxTime(last, s.TS)
+	}
+	return st, first, last, nil
+}
+
+// runLocal is the TUI: on a chosen source, or collecting on this machine.
 func runLocal(args []string) error {
 	fs := flags("kenbun")
+	src := sourceFlags(fs)
 	otlp := fs.String("otlp", "localhost:4317", "OTLP gRPC listen address")
 	dump := fs.String("dump", "", "also write received profiles to this JSONL file")
 	profile := fs.Bool("profile", false, "also profile this machine with the embedded eBPF profiler (Linux, needs root)")
-	addr := fs.String("addr", "", "show a remote 'kenbun serve' at host:port instead")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
-	if *addr != "" {
-		log.SetOutput(io.Discard)
-		return runTUI(tui.New(api.NewClient(*addr), tui.Options{}), nil)
+	if fs.NArg() > 0 {
+		return fmt.Errorf("unexpected %q\n\n%s", fs.Args(), usage)
 	}
+	collect := false
+	fs.Visit(func(f *flag.Flag) { collect = collect || f.Name == "otlp" || f.Name == "dump" || f.Name == "profile" })
+
+	if src.chosen() {
+		if collect {
+			return errors.New("--otlp, --dump and --profile collect on this machine: they don't go with --k8s, --addr or --file")
+		}
+		s, end, span, done, err := src.open(context.Background(), "")
+		if err != nil {
+			return err
+		}
+		defer done()
+		log.SetOutput(io.Discard)
+		return runTUI(tui.New(s, tui.Options{At: end, Window: span}), nil)
+	}
+
 	if *profile && runtime.GOOS != "linux" {
 		return errors.New("--profile uses eBPF and only works on Linux")
 	}
@@ -165,6 +254,16 @@ func runLocal(args []string) error {
 	defer cancel()
 	go prune(ctx, st)
 
+	// Queries ('kenbun top') read what the TUI shows. Another kenbun may hold the
+	// port; then they read that one, and this TUI just doesn't serve them.
+	if ln, err := net.Listen("tcp", "localhost:7070"); err != nil {
+		log.Printf("not serving queries: %v", err)
+	} else {
+		srv := &http.Server{Handler: api.Handler(st), ReadHeaderTimeout: 10 * time.Second}
+		go srv.Serve(ln)
+		defer srv.Close()
+	}
+
 	uris, err := localConfig(*otlp, *dump, logPath, *profile)
 	if err != nil {
 		return err
@@ -180,38 +279,6 @@ func runLocal(args []string) error {
 		return fmt.Errorf("%w (log: %s)", err, logPath)
 	}
 	return nil
-}
-
-func runView(args []string) error {
-	fs := flags("view")
-	if err := fs.Parse(args); err != nil {
-		return err
-	}
-	if fs.NArg() != 1 {
-		return fmt.Errorf("view takes one file\n\n%s", usage)
-	}
-	samples, err := ingest.ReadJSONL(fs.Arg(0))
-	if err != nil {
-		return err
-	}
-	if len(samples) == 0 {
-		return fmt.Errorf("%s: no samples", fs.Arg(0))
-	}
-	st, err := sqlite.Open("")
-	if err != nil {
-		return err
-	}
-	defer st.Close()
-	if err := st.Ingest(context.Background(), samples); err != nil {
-		return err
-	}
-
-	first, last := samples[0].TS, samples[0].TS
-	for _, s := range samples {
-		first, last = minTime(first, s.TS), maxTime(last, s.TS)
-	}
-	log.SetOutput(io.Discard)
-	return runTUI(tui.New(st, tui.Options{At: last.Add(time.Nanosecond), Window: last.Sub(first)}), nil)
 }
 
 func runServe(args []string) error {
@@ -263,20 +330,31 @@ func runServe(args []string) error {
 	return errors.Join(err, srv.Shutdown(shutdownCtx))
 }
 
-// runQuery runs top, functions, loop or diff against a 'kenbun serve'.
+// runQuery runs top, functions, diff or loop on a source, by default the
+// kenbun running on this machine.
 func runQuery(cmd string, args []string) error {
 	fs := flags(cmd)
 	var q cli.Query
 	queryFlags(fs, &q)
-	addr := fs.String("addr", "localhost:7070", "address of 'kenbun serve'")
+	src := sourceFlags(fs)
 	proc, err := parseQuery(fs, cmd, args)
 	if err != nil {
 		return err
 	}
-	q.Src = api.NewClient(*addr)
-	err = query(context.Background(), cmd, proc, q)
-	if errors.Is(err, syscall.ECONNREFUSED) {
-		err = fmt.Errorf("%w\nis 'kenbun serve' running there? (or 'kenbun k8s %s' for a cluster)", err, cmd)
+	ctx := context.Background()
+	s, end, span, done, err := src.open(ctx, "localhost:7070")
+	if err != nil {
+		return err
+	}
+	defer done()
+	q.Src, q.End = s, end
+	if !end.IsZero() && q.Since > span { // a capture: average CPU over what it holds, not over --since
+		q.Since = span.Truncate(time.Second) + time.Second
+	}
+	err = query(ctx, cmd, proc, q)
+	if errors.Is(err, syscall.ECONNREFUSED) && !src.chosen() {
+		err = fmt.Errorf("%w\nno kenbun is running here: start one ('kenbun', or 'sudo kenbun serve --profile' headless), "+
+			"or read another source: --k8s, --addr, --file", err)
 	}
 	return err
 }
@@ -344,45 +422,28 @@ func runAgent(args []string) error {
 	return col.Run(context.Background()) // returns on SIGINT/SIGTERM
 }
 
+// runK8s sets kenbun up on a cluster; reading it is --k8s on any command.
 func runK8s(args []string) error {
-	sub := "tui"
-	if len(args) > 0 && !strings.HasPrefix(args[0], "-") {
-		sub, args = args[0], args[1:]
+	if len(args) == 0 || strings.HasPrefix(args[0], "-") {
+		return fmt.Errorf("k8s needs a command: deploy, destroy or manifests (to read the cluster: kenbun --k8s)\n\n%s", usage)
 	}
+	sub, args := args[0], args[1:]
 	fs := flags("k8s " + sub)
 	var o k8s.Options
 	fs.StringVar(&o.Context, "context", "", "kubeconfig context (default: current)")
-	ctx := context.Background()
-
-	switch sub {
-	case "top", "functions", "loop", "diff":
-		var q cli.Query
-		queryFlags(fs, &q)
-		proc, err := parseQuery(fs, sub, args)
-		if err != nil {
-			return err
-		}
-		addr, stop, err := k8s.PortForward(ctx, o)
-		if err != nil {
-			return err
-		}
-		defer stop()
-		q.Src = api.NewClient(addr)
-		return query(ctx, sub, proc, q)
-	}
-
 	fs.StringVar(&o.Image, "image", "ghcr.io/adrijh/kenbun:"+version, "kenbun image")
 	fs.BoolVar(&o.Profiler, "profiler", true, "deploy the eBPF profiler DaemonSet (needs nodes in the host PID namespace: not k3d or kind)")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
+	ctx := context.Background()
 
 	switch sub {
 	case "deploy":
 		if err := k8s.Deploy(ctx, o); err != nil {
 			return err
 		}
-		fmt.Println("\nkenbun is running. Open it with: kenbun k8s")
+		fmt.Println("\nkenbun is running. Open it with: kenbun --k8s")
 		return nil
 	case "destroy":
 		return k8s.Destroy(ctx, o)
@@ -393,14 +454,6 @@ func runK8s(args []string) error {
 		}
 		fmt.Print(m)
 		return nil
-	case "tui":
-		addr, stop, err := k8s.PortForward(ctx, o)
-		if err != nil {
-			return err
-		}
-		defer stop()
-		log.SetOutput(io.Discard)
-		return runTUI(tui.New(api.NewClient(addr), tui.Options{}), nil)
 	}
 	return fmt.Errorf("unknown k8s command %q\n\n%s", sub, usage)
 }

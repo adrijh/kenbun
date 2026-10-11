@@ -37,6 +37,7 @@ import (
 	profiler "go.opentelemetry.io/ebpf-profiler/collector"
 
 	"github.com/adrijh/kenbun/internal/api"
+	"github.com/adrijh/kenbun/internal/cli"
 	"github.com/adrijh/kenbun/internal/ingest"
 	"github.com/adrijh/kenbun/internal/k8s"
 	"github.com/adrijh/kenbun/internal/store"
@@ -58,20 +59,30 @@ const retention = 30 * time.Minute // largest TUI window (15m) plus its diff bas
 
 const usage = `kenbun: OTLP profiles in your terminal
 
-  kenbun [--otlp addr] [--dump file.jsonl]   receive profiles and show the TUI
-         [--profile]                         also profile this machine (embedded eBPF profiler, Linux, root)
+  kenbun [tui] [--otlp addr] [--dump file.jsonl] [--profile]
+                                             receive profiles and show the TUI; --profile also
+                                             profiles this machine (eBPF: Linux, root)
+  kenbun [tui] --addr host:port              TUI for a remote 'kenbun serve'
   kenbun view file.jsonl[.gz]                show a capture (from --dump) offline
-  kenbun serve [--otlp addr] [--http addr]   receive profiles and serve the HTTP API
-  kenbun tui [--addr host:port]              TUI for a remote 'kenbun serve'
+  kenbun serve [--otlp addr] [--http addr] [--profile]
+                                             receive profiles and serve the HTTP API
+
+  kenbun top [--since 5m] [--limit 20] [--json] [--addr host:port]
+                                             processes by CPU, from a 'kenbun serve'
+  kenbun functions <process> [flags]         a process's hottest functions, self and total
+  kenbun loop <process> [flags]              asyncio event loop: blocked %, callbacks cpu vs wait
+  kenbun diff <process> [flags]              functions that changed vs the window before
+
+  kenbun k8s [tui] [--context c]             port-forward to the cluster and open the TUI
+  kenbun k8s top|functions|loop|diff [--context c] [flags]
+                                             the queries above, on the cluster
+  kenbun k8s deploy [--context c] [--image i] [--profiler=false]
+                                             install kenbun + eBPF profiler (kubectl apply)
+  kenbun k8s destroy [--context c]           remove everything deploy created
+  kenbun k8s manifests [--image i] [--profiler=false]
+                                             print the manifests instead
   kenbun agent [--to host:port]              eBPF profiler on a k8s node, pushing to kenbun
                                              (the DaemonSet 'k8s deploy' creates)
-
-  kenbun k8s deploy [--context c] [--image i] [--profiler=false]
-                                               install kenbun + eBPF profiler (kubectl apply)
-  kenbun k8s tui [--context c]                 port-forward and open the TUI
-  kenbun k8s destroy [--context c]             remove everything deploy created
-  kenbun k8s manifests [--image i] [--profiler=false]
-                                               print the manifests instead
 `
 
 func main() {
@@ -81,14 +92,14 @@ func main() {
 	}
 	var err error
 	switch cmd {
-	case "":
+	case "", "tui":
 		err = runLocal(args)
 	case "view":
 		err = runView(args)
 	case "serve":
 		err = runServe(args)
-	case "tui":
-		err = runRemote(args)
+	case "top", "functions", "loop", "diff":
+		err = runQuery(cmd, args)
 	case "agent":
 		err = runAgent(args)
 	case "k8s":
@@ -116,8 +127,13 @@ func runLocal(args []string) error {
 	otlp := fs.String("otlp", "localhost:4317", "OTLP gRPC listen address")
 	dump := fs.String("dump", "", "also write received profiles to this JSONL file")
 	profile := fs.Bool("profile", false, "also profile this machine with the embedded eBPF profiler (Linux, needs root)")
+	addr := fs.String("addr", "", "show a remote 'kenbun serve' at host:port instead")
 	if err := fs.Parse(args); err != nil {
 		return err
+	}
+	if *addr != "" {
+		log.SetOutput(io.Discard)
+		return runTUI(tui.New(api.NewClient(*addr), tui.Options{}), nil)
 	}
 	if *profile && runtime.GOOS != "linux" {
 		return errors.New("--profile uses eBPF and only works on Linux")
@@ -203,8 +219,12 @@ func runServe(args []string) error {
 	otlp := fs.String("otlp", "0.0.0.0:4317", "OTLP gRPC listen address")
 	httpAddr := fs.String("http", ":7070", "HTTP API listen address")
 	dump := fs.String("dump", "", "also write received profiles to this JSONL file")
+	profile := fs.Bool("profile", false, "also profile this machine with the embedded eBPF profiler (Linux, needs root)")
 	if err := fs.Parse(args); err != nil {
 		return err
+	}
+	if *profile && runtime.GOOS != "linux" {
+		return errors.New("--profile uses eBPF and only works on Linux")
 	}
 
 	st, err := sqlite.Open("")
@@ -216,7 +236,7 @@ func runServe(args []string) error {
 	defer cancel()
 	go prune(ctx, st)
 
-	uris, err := localConfig(*otlp, *dump, "", false) // logs to stderr
+	uris, err := localConfig(*otlp, *dump, "", *profile) // logs to stderr
 	if err != nil {
 		return err
 	}
@@ -243,14 +263,67 @@ func runServe(args []string) error {
 	return errors.Join(err, srv.Shutdown(shutdownCtx))
 }
 
-func runRemote(args []string) error {
-	fs := flags("tui")
+// runQuery runs top, functions, loop or diff against a 'kenbun serve'.
+func runQuery(cmd string, args []string) error {
+	fs := flags(cmd)
+	var q cli.Query
+	queryFlags(fs, &q)
 	addr := fs.String("addr", "localhost:7070", "address of 'kenbun serve'")
-	if err := fs.Parse(args); err != nil {
+	proc, err := parseQuery(fs, cmd, args)
+	if err != nil {
 		return err
 	}
-	log.SetOutput(io.Discard)
-	return runTUI(tui.New(api.NewClient(*addr), tui.Options{}), nil)
+	q.Src = api.NewClient(*addr)
+	err = query(context.Background(), cmd, proc, q)
+	if errors.Is(err, syscall.ECONNREFUSED) {
+		err = fmt.Errorf("%w\nis 'kenbun serve' running there? (or 'kenbun k8s %s' for a cluster)", err, cmd)
+	}
+	return err
+}
+
+func queryFlags(fs *flag.FlagSet, q *cli.Query) {
+	fs.DurationVar(&q.Since, "since", 5*time.Minute, "window: the last duration (30s, 5m, 1h)")
+	fs.IntVar(&q.Limit, "limit", 20, "rows to show (0: all)")
+	fs.BoolVar(&q.JSON, "json", false, "print JSON")
+}
+
+// parseQuery parses flags on either side of the process name, which every
+// command but top takes: 'kenbun loop api --since 1m' works too.
+func parseQuery(fs *flag.FlagSet, cmd string, args []string) (proc string, err error) {
+	if err := fs.Parse(args); err != nil {
+		return "", err
+	}
+	if cmd == "top" {
+		if fs.NArg() > 0 {
+			return "", fmt.Errorf("top takes no arguments, got %q", fs.Args())
+		}
+		return "", nil
+	}
+	if fs.NArg() == 0 {
+		return "", fmt.Errorf("%s needs a process name: see 'kenbun top'", cmd)
+	}
+	proc = fs.Arg(0)
+	if err := fs.Parse(fs.Args()[1:]); err != nil {
+		return "", err
+	}
+	if fs.NArg() > 0 {
+		return "", fmt.Errorf("%s takes one process name, got extra %q", cmd, fs.Args())
+	}
+	return proc, nil
+}
+
+func query(ctx context.Context, cmd, proc string, q cli.Query) error {
+	q.Out = os.Stdout
+	switch cmd {
+	case "top":
+		return cli.Top(ctx, q)
+	case "functions":
+		return cli.Functions(ctx, q, proc)
+	case "loop":
+		return cli.Loop(ctx, q, proc)
+	default:
+		return cli.Diff(ctx, q, proc)
+	}
 }
 
 func runAgent(args []string) error {
@@ -272,26 +345,44 @@ func runAgent(args []string) error {
 }
 
 func runK8s(args []string) error {
-	if len(args) == 0 {
-		return fmt.Errorf("k8s needs a command\n\n%s", usage)
+	sub := "tui"
+	if len(args) > 0 && !strings.HasPrefix(args[0], "-") {
+		sub, args = args[0], args[1:]
 	}
-	sub, args := args[0], args[1:]
 	fs := flags("k8s " + sub)
 	var o k8s.Options
 	fs.StringVar(&o.Context, "context", "", "kubeconfig context (default: current)")
+	ctx := context.Background()
+
+	switch sub {
+	case "top", "functions", "loop", "diff":
+		var q cli.Query
+		queryFlags(fs, &q)
+		proc, err := parseQuery(fs, sub, args)
+		if err != nil {
+			return err
+		}
+		addr, stop, err := k8s.PortForward(ctx, o)
+		if err != nil {
+			return err
+		}
+		defer stop()
+		q.Src = api.NewClient(addr)
+		return query(ctx, sub, proc, q)
+	}
+
 	fs.StringVar(&o.Image, "image", "ghcr.io/adrijh/kenbun:"+version, "kenbun image")
 	fs.BoolVar(&o.Profiler, "profiler", true, "deploy the eBPF profiler DaemonSet (needs nodes in the host PID namespace: not k3d or kind)")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
-	ctx := context.Background()
 
 	switch sub {
 	case "deploy":
 		if err := k8s.Deploy(ctx, o); err != nil {
 			return err
 		}
-		fmt.Println("\nkenbun is running. Open it with: kenbun k8s tui")
+		fmt.Println("\nkenbun is running. Open it with: kenbun k8s")
 		return nil
 	case "destroy":
 		return k8s.Destroy(ctx, o)

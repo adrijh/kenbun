@@ -24,6 +24,7 @@ type Source interface {
 	Processes(ctx context.Context, from, to time.Time) ([]store.ProcStat, error)
 	Stacks(ctx context.Context, process string, from, to time.Time) ([]store.StackWeight, error)
 	ThreadStacks(ctx context.Context, process string, from, to time.Time) ([]store.ThreadStack, error)
+	Oldest(ctx context.Context) (time.Time, error)
 }
 
 // Query is what every command shares.
@@ -34,6 +35,40 @@ type Query struct {
 	Limit int           // rows; <= 0: all
 	JSON  bool
 	Out   io.Writer
+
+	short bool // Since was cut to the data there is
+}
+
+// fit shortens the window to the data there is (kenbun just started, or a
+// short capture), so CPU isn't averaged over time nothing was recorded in. A
+// diff needs room for two windows, so it splits what there is in halves.
+func (q *Query) fit(ctx context.Context, windows int) {
+	if q.End.IsZero() {
+		q.End = time.Now() // one now for fitting and querying
+	}
+	oldest, err := q.Src.Oldest(ctx)
+	if err != nil || oldest.IsZero() { // unknown (an older kenbun): keep --since
+		return
+	}
+	from, to := q.window()
+	if !oldest.After(to.Add(-time.Duration(windows) * q.Since)) {
+		return
+	}
+	have := to.Sub(oldest)
+	if windows == 1 {
+		q.Since = have.Truncate(time.Second) + time.Second // up: the window must reach the oldest sample
+	} else if q.Since = (have / time.Duration(windows)).Truncate(time.Second); q.Since < time.Second {
+		q.Since = time.Second
+	}
+	q.short = q.Since < to.Sub(from)
+}
+
+// last is the header's window: "last 5m", or "last 51s (all there is)".
+func (q Query) last() string {
+	if q.short {
+		return "last " + since(q.Since) + " (all there is)"
+	}
+	return "last " + since(q.Since)
 }
 
 func (q Query) window() (from, to time.Time) {
@@ -51,18 +86,20 @@ func (q Query) millicores(samples int64) int64 {
 }
 
 type window struct {
-	Since string    `json:"since"`
-	From  time.Time `json:"from"`
-	To    time.Time `json:"to"`
+	Since   string    `json:"since"`
+	From    time.Time `json:"from"`
+	To      time.Time `json:"to"`
+	AllData bool      `json:"all_data,omitempty"` // since was cut to the data there is
 }
 
 func (q Query) head() window {
 	from, to := q.window()
-	return window{since(q.Since), from.UTC(), to.UTC()}
+	return window{since(q.Since), from.UTC(), to.UTC(), q.short}
 }
 
 // Top: processes by CPU.
 func Top(ctx context.Context, q Query) error {
+	q.fit(ctx, 1)
 	from, to := q.window()
 	procs, err := q.Src.Processes(ctx, from, to)
 	if err != nil {
@@ -90,7 +127,7 @@ func Top(ctx context.Context, q Query) error {
 			Processes  []row `json:"processes"`
 		}{q.head(), q.millicores(all), all, rows})
 	}
-	fmt.Fprintf(q.Out, "all processes · last %s · %dm CPU · %d samples\n\n", since(q.Since), q.millicores(all), all)
+	fmt.Fprintf(q.Out, "all processes · %s · %dm CPU · %d samples\n\n", q.last(), q.millicores(all), all)
 	if len(rows) == 0 {
 		fmt.Fprintln(q.Out, "no samples")
 		return nil
@@ -103,6 +140,7 @@ func Top(ctx context.Context, q Query) error {
 // Functions: one process's hottest functions, self (the function itself) and
 // total (with what it calls), as % of the process's CPU.
 func Functions(ctx context.Context, q Query, proc string) error {
+	q.fit(ctx, 1)
 	from, to := q.window()
 	stacks, err := q.Src.Stacks(ctx, proc, from, to)
 	if err != nil {
@@ -128,7 +166,7 @@ func Functions(ctx context.Context, q Query, proc string) error {
 			Functions  []row  `json:"functions"`
 		}{q.head(), proc, q.millicores(all), all, rows})
 	}
-	fmt.Fprintf(q.Out, "%s · last %s · %dm CPU · %d samples\n\n", proc, since(q.Since), q.millicores(all), all)
+	fmt.Fprintf(q.Out, "%s · %s · %dm CPU · %d samples\n\n", proc, q.last(), q.millicores(all), all)
 	if len(rows) == 0 {
 		fmt.Fprintln(q.Out, "no samples for this process ('kenbun top' lists them)")
 		return nil
@@ -141,6 +179,7 @@ func Functions(ctx context.Context, q Query, proc string) error {
 // Diff: how one process's functions moved against the window before, in
 // percentage points of its CPU, biggest change first.
 func Diff(ctx context.Context, q Query, proc string) error {
+	q.fit(ctx, 2)
 	from, to := q.window()
 	cur, err := q.Src.Stacks(ctx, proc, from, to)
 	if err != nil {
@@ -195,8 +234,8 @@ func Diff(ctx context.Context, q Query, proc string) error {
 			Functions        []row  `json:"functions"`
 		}{q.head(), proc, q.millicores(curN), q.millicores(prevN), curN, prevN, rows})
 	}
-	fmt.Fprintf(q.Out, "%s · last %s vs the %s before · %dm → %dm CPU · %d → %d samples\n\n",
-		proc, since(q.Since), since(q.Since), q.millicores(prevN), q.millicores(curN), prevN, curN)
+	fmt.Fprintf(q.Out, "%s · %s vs the %s before · %dm → %dm CPU · %d → %d samples\n\n",
+		proc, q.last(), since(q.Since), q.millicores(prevN), q.millicores(curN), prevN, curN)
 	if curN == 0 || prevN == 0 {
 		fmt.Fprintln(q.Out, "nothing to compare: no samples in one of the windows")
 		return nil
@@ -209,6 +248,7 @@ func Diff(ctx context.Context, q Query, proc string) error {
 // Loop: each asyncio event loop of a process, how much of its time callbacks
 // blocked it, and which ones, on CPU or waiting (sleep, blocking I/O).
 func Loop(ctx context.Context, q Query, proc string) error {
+	q.fit(ctx, 1)
 	from, to := q.window()
 	ts, err := q.Src.ThreadStacks(ctx, proc, from, to)
 	if err != nil {
@@ -250,7 +290,7 @@ func Loop(ctx context.Context, q Query, proc string) error {
 			Loops   []loop `json:"loops"`
 		}{q.head(), proc, loops})
 	}
-	fmt.Fprintf(q.Out, "%s · last %s\n", proc, since(q.Since))
+	fmt.Fprintf(q.Out, "%s · %s\n", proc, q.last())
 	if len(loops) == 0 {
 		fmt.Fprintln(q.Out, "\nno asyncio event loop (needs Python frames; waiting needs off-CPU samples)")
 		return nil

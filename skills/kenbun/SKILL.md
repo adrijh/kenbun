@@ -71,7 +71,10 @@ kenbun functions crio --k8s --since 15m --limit 0 --json |
    has CPU before → after.
 4. If it is a Python asyncio service: `loop <process>`.
 
-Before concluding, check the sample counts in each header. kenbun samples each CPU
+A header saying `last 2m (all there is)` means kenbun holds less than the
+`--since` you asked for (it just started, or a short capture): numbers cover what
+there is, and `diff` then compares its two halves. Before concluding, check the
+sample counts in each header. kenbun samples each CPU
 97 times a second, so a process at 5m CPU over 5 minutes has ~150 samples: shifts
 of a few points are noise there. Prefer a longer `--since` for quiet processes, and
 say how much data a claim rests on.

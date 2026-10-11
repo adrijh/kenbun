@@ -50,6 +50,11 @@ func TestClientMatchesStore(t *testing.T) {
 		t.Error("Stacks via client differ from store")
 	}
 
+	wantOld, _ := st.Oldest(ctx)
+	if gotOld, err := c.Oldest(ctx); err != nil || !gotOld.Equal(wantOld) || gotOld.IsZero() {
+		t.Errorf("Oldest = %v, %v; want %v", gotOld, err, wantOld)
+	}
+
 	wantTS, _ := st.ThreadStacks(ctx, "python3.14", from, to)
 	gotTS, err := c.ThreadStacks(ctx, "python3.14", from, to)
 	if err != nil {

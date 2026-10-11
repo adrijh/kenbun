@@ -342,15 +342,12 @@ func runQuery(cmd string, args []string) error {
 		return err
 	}
 	ctx := context.Background()
-	s, end, span, done, err := src.open(ctx, "localhost:7070")
+	s, end, _, done, err := src.open(ctx, "localhost:7070")
 	if err != nil {
 		return err
 	}
 	defer done()
 	q.Src, q.End = s, end
-	if !end.IsZero() && q.Since > span { // a capture: average CPU over what it holds, not over --since
-		q.Since = span.Truncate(time.Second) + time.Second
-	}
 	err = query(ctx, cmd, proc, q)
 	if errors.Is(err, syscall.ECONNREFUSED) && !src.chosen() {
 		err = fmt.Errorf("%w\nno kenbun is running here: start one ('kenbun', or 'sudo kenbun serve --profile' headless), "+

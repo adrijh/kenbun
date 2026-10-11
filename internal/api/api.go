@@ -4,6 +4,7 @@
 //	GET /api/processes?from=&to=          → []store.ProcStat
 //	GET /api/stacks?process=&from=&to=    → []store.StackWeight
 //	GET /api/threadstacks?process=&from=&to= → []store.ThreadStack
+//	GET /api/oldest                         → {"oldest": unix ns, 0 if empty}
 package api
 
 import (
@@ -48,6 +49,14 @@ func Handler(st *store.Store) http.Handler {
 		}
 		ts, err := st.ThreadStacks(r.Context(), r.URL.Query().Get("process"), from, to)
 		reply(w, ts, err)
+	})
+	mux.HandleFunc("GET /api/oldest", func(w http.ResponseWriter, r *http.Request) {
+		t, err := st.Oldest(r.Context())
+		var ns int64
+		if !t.IsZero() {
+			ns = t.UnixNano()
+		}
+		reply(w, map[string]int64{"oldest": ns}, err)
 	})
 	return mux
 }
@@ -103,6 +112,14 @@ func (c *Client) ThreadStacks(ctx context.Context, process string, from, to time
 	q.Set("process", process)
 	var out []store.ThreadStack
 	return out, c.get(ctx, "/api/threadstacks", q, &out)
+}
+
+func (c *Client) Oldest(ctx context.Context) (time.Time, error) {
+	var out struct{ Oldest int64 }
+	if err := c.get(ctx, "/api/oldest", url.Values{}, &out); err != nil || out.Oldest == 0 {
+		return time.Time{}, err
+	}
+	return time.Unix(0, out.Oldest), nil
 }
 
 func rangeQuery(from, to time.Time) url.Values {

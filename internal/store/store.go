@@ -290,6 +290,17 @@ func (s *Store) Stacks(ctx context.Context, process string, from, to time.Time) 
 	return out, rows.Err()
 }
 
+// Oldest is when the oldest sample held was taken; zero when there are none.
+// Right after a start (or in a short capture) it's later than a window's start,
+// and an average over the whole window would undercount.
+func (s *Store) Oldest(ctx context.Context) (time.Time, error) {
+	var ns sql.NullInt64
+	if err := s.db.QueryRowContext(ctx, `SELECT min(ts) FROM samples`).Scan(&ns); err != nil || !ns.Valid {
+		return time.Time{}, err
+	}
+	return time.Unix(0, ns.Int64), nil
+}
+
 // ThreadStacks is Stacks per thread, on and off CPU: the input for Loop.
 func (s *Store) ThreadStacks(ctx context.Context, process string, from, to time.Time) ([]ThreadStack, error) {
 	rows, err := s.db.QueryContext(ctx, `

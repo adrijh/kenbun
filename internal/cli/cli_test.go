@@ -67,8 +67,17 @@ func TestCommands(t *testing.T) {
 	if s := run("functions", func() error { return Functions(ctx, q, "python3.14") }); !strings.Contains(s, "37.8%  fib (/app/src/myapp/main.py:18)") {
 		t.Errorf("functions lacks fib at 37.8%% total, at main.py:18")
 	}
-	if s := run("diff", func() error { return Diff(ctx, q, "python3.14") }); !strings.Contains(s, "nothing to compare") {
-		t.Errorf("diff with an empty previous window should say so")
+	// The capture is shorter than two windows: diff compares its halves.
+	if s := run("diff", func() error { return Diff(ctx, q, "python3.14") }); !strings.Contains(s, "(all there is) vs the 6s before") ||
+		!strings.Contains(s, "ΔSELF") {
+		t.Errorf("diff on a short capture should split it in halves")
+	}
+
+	// An hour of --since on 13s of data averages CPU over the 13s.
+	long := q
+	long.Since = time.Hour
+	if s := run("top --since 1h", func() error { return Top(ctx, long) }); !strings.Contains(s, "last 13s (all there is) · 703m CPU") {
+		t.Errorf("top should fit the window to the data")
 	}
 
 	q, out = fixture(t, "asyncio.jsonl.gz")

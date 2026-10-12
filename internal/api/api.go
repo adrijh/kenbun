@@ -1,10 +1,12 @@
 // Package api serves the store over HTTP for remote TUIs (and later the web
 // view). Times are unix nanoseconds, ranges are [from, to).
 //
-//	GET /api/processes?from=&to=          → []store.ProcStat
-//	GET /api/stacks?process=&from=&to=    → []store.StackWeight
-//	GET /api/threadstacks?process=&from=&to= → []store.ThreadStack
-//	GET /api/oldest                         → {"oldest": unix ns, 0 if empty}
+//	GET /api/processes?from=&to=                  → []store.ProcStat
+//	GET /api/stacks?process=&pid=&from=&to=       → []store.StackWeight
+//	GET /api/threadstacks?process=&pid=&from=&to= → []store.ThreadStack
+//	GET /api/oldest                               → {"oldest": unix ns, 0 if empty}
+//
+// pid is optional: without it (or 0), all of the process's PIDs.
 package api
 
 import (
@@ -38,7 +40,7 @@ func Handler(st *store.Store) http.Handler {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
-		ss, err := st.Stacks(r.Context(), r.URL.Query().Get("process"), from, to)
+		ss, err := st.Stacks(r.Context(), r.URL.Query().Get("process"), pid(r), from, to)
 		reply(w, ss, err)
 	})
 	mux.HandleFunc("GET /api/threadstacks", func(w http.ResponseWriter, r *http.Request) {
@@ -47,7 +49,7 @@ func Handler(st *store.Store) http.Handler {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
-		ts, err := st.ThreadStacks(r.Context(), r.URL.Query().Get("process"), from, to)
+		ts, err := st.ThreadStacks(r.Context(), r.URL.Query().Get("process"), pid(r), from, to)
 		reply(w, ts, err)
 	})
 	mux.HandleFunc("GET /api/oldest", func(w http.ResponseWriter, r *http.Request) {
@@ -69,6 +71,11 @@ func timeRange(r *http.Request) (from, to time.Time, err error) {
 		return from, to, fmt.Errorf("from and to must be unix nanoseconds")
 	}
 	return time.Unix(0, f), time.Unix(0, t), nil
+}
+
+func pid(r *http.Request) int64 {
+	n, _ := strconv.ParseInt(r.URL.Query().Get("pid"), 10, 64)
+	return n
 }
 
 func reply(w http.ResponseWriter, v any, err error) {
@@ -100,16 +107,14 @@ func (c *Client) Processes(ctx context.Context, from, to time.Time) ([]store.Pro
 	return out, c.get(ctx, "/api/processes", rangeQuery(from, to), &out)
 }
 
-func (c *Client) Stacks(ctx context.Context, process string, from, to time.Time) ([]store.StackWeight, error) {
-	q := rangeQuery(from, to)
-	q.Set("process", process)
+func (c *Client) Stacks(ctx context.Context, process string, pid int64, from, to time.Time) ([]store.StackWeight, error) {
+	q := procQuery(process, pid, from, to)
 	var out []store.StackWeight
 	return out, c.get(ctx, "/api/stacks", q, &out)
 }
 
-func (c *Client) ThreadStacks(ctx context.Context, process string, from, to time.Time) ([]store.ThreadStack, error) {
-	q := rangeQuery(from, to)
-	q.Set("process", process)
+func (c *Client) ThreadStacks(ctx context.Context, process string, pid int64, from, to time.Time) ([]store.ThreadStack, error) {
+	q := procQuery(process, pid, from, to)
 	var out []store.ThreadStack
 	return out, c.get(ctx, "/api/threadstacks", q, &out)
 }
@@ -127,6 +132,15 @@ func rangeQuery(from, to time.Time) url.Values {
 		"from": {strconv.FormatInt(from.UnixNano(), 10)},
 		"to":   {strconv.FormatInt(to.UnixNano(), 10)},
 	}
+}
+
+func procQuery(process string, pid int64, from, to time.Time) url.Values {
+	q := rangeQuery(from, to)
+	q.Set("process", process)
+	if pid != 0 {
+		q.Set("pid", strconv.FormatInt(pid, 10))
+	}
+	return q
 }
 
 func (c *Client) get(ctx context.Context, path string, q url.Values, out any) error {

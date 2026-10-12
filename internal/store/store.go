@@ -10,11 +10,13 @@
 package store
 
 import (
+	"cmp"
 	"context"
 	"database/sql"
 	"errors"
 	"fmt"
 	"hash/fnv"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -35,8 +37,15 @@ type Sample struct {
 
 // ProcStat is one row of the process list.
 type ProcStat struct {
-	Name   string `json:"name"`
-	Weight int64  `json:"weight"`
+	Name   string    `json:"name"`
+	Weight int64     `json:"weight"`
+	PIDs   []PIDStat `json:"pids,omitempty"` // heaviest first; one {0, Weight} when the sender gave none
+}
+
+// PIDStat is one process instance under a ProcStat's name.
+type PIDStat struct {
+	PID    int64 `json:"pid"`
+	Weight int64 `json:"weight"`
 }
 
 // StackWeight is the aggregated weight of one distinct stack.
@@ -236,43 +245,57 @@ func stackID(folded string) int64 {
 	return int64(h.Sum64())
 }
 
-// Processes returns processes by total on-CPU weight in [from, to).
+// Processes returns processes by total on-CPU weight in [from, to), each with
+// its PIDs.
 func (s *Store) Processes(ctx context.Context, from, to time.Time) ([]ProcStat, error) {
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT process, sum(weight) AS w
+		SELECT process, coalesce(pid, 0), sum(weight)
 		FROM samples
 		WHERE ts >= ? AND ts < ? AND off_cpu = 0
-		GROUP BY process
-		ORDER BY w DESC`, from.UnixNano(), to.UnixNano())
+		GROUP BY process, pid`, from.UnixNano(), to.UnixNano())
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 
 	var out []ProcStat
+	at := map[string]int{}
 	for rows.Next() {
-		var p ProcStat
-		if err := rows.Scan(&p.Name, &p.Weight); err != nil {
+		var name string
+		var p PIDStat
+		if err := rows.Scan(&name, &p.PID, &p.Weight); err != nil {
 			return nil, err
 		}
-		out = append(out, p)
+		i, ok := at[name]
+		if !ok {
+			i, at[name] = len(out), len(out)
+			out = append(out, ProcStat{Name: name})
+		}
+		out[i].Weight += p.Weight
+		out[i].PIDs = append(out[i].PIDs, p)
+	}
+	heaviest := func(a, b int64) int { return cmp.Compare(b, a) }
+	slices.SortFunc(out, func(a, b ProcStat) int { return cmp.Or(heaviest(a.Weight, b.Weight), cmp.Compare(a.Name, b.Name)) })
+	for _, p := range out {
+		slices.SortFunc(p.PIDs, func(a, b PIDStat) int { return cmp.Or(heaviest(a.Weight, b.Weight), cmp.Compare(a.PID, b.PID)) })
 	}
 	return out, rows.Err()
 }
 
 // Stacks returns the on-CPU weight of each distinct stack of one process in
-// [from, to). This is the input for both Top and the flamegraph.
-func (s *Store) Stacks(ctx context.Context, process string, from, to time.Time) ([]StackWeight, error) {
+// [from, to), of all its PIDs or only pid if it isn't 0. This is the input for
+// both Top and the flamegraph.
+func (s *Store) Stacks(ctx context.Context, process string, pid int64, from, to time.Time) ([]StackWeight, error) {
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT st.folded, st.locs, a.w
 		FROM (
 			SELECT stack_id, sum(weight) AS w
 			FROM samples
-			WHERE process = ? AND ts >= ? AND ts < ? AND off_cpu = 0
+			WHERE process = ? AND ts >= ? AND ts < ? AND off_cpu = 0 AND (? = 0 OR pid = ?)
 			GROUP BY stack_id
 		) a
 		JOIN stacks st ON st.stack_id = a.stack_id`,
-		process, from.UnixNano(), to.UnixNano())
+		process, from.UnixNano(), to.UnixNano(), pid, pid)
 	if err != nil {
 		return nil, err
 	}
@@ -302,17 +325,17 @@ func (s *Store) Oldest(ctx context.Context) (time.Time, error) {
 }
 
 // ThreadStacks is Stacks per thread, on and off CPU: the input for Loop.
-func (s *Store) ThreadStacks(ctx context.Context, process string, from, to time.Time) ([]ThreadStack, error) {
+func (s *Store) ThreadStacks(ctx context.Context, process string, pid int64, from, to time.Time) ([]ThreadStack, error) {
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT a.thread, a.off_cpu, st.folded, st.locs, a.w
 		FROM (
 			SELECT thread, off_cpu, stack_id, sum(weight) AS w
 			FROM samples
-			WHERE process = ? AND ts >= ? AND ts < ?
+			WHERE process = ? AND ts >= ? AND ts < ? AND (? = 0 OR pid = ?)
 			GROUP BY thread, off_cpu, stack_id
 		) a
 		JOIN stacks st ON st.stack_id = a.stack_id`,
-		process, from.UnixNano(), to.UnixNano())
+		process, from.UnixNano(), to.UnixNano(), pid, pid)
 	if err != nil {
 		return nil, err
 	}

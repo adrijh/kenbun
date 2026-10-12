@@ -61,8 +61,16 @@ func TestCommands(t *testing.T) {
 		return out.String()
 	}
 
-	if s := run("top", func() error { return Top(ctx, q) }); !strings.Contains(s, "74.1%  python3.14") {
-		t.Errorf("top lacks python3.14 at 74.1%%")
+	s := run("top", func() error { return Top(ctx, q) })
+	if !hasRow(s, "74.1%", "python3.14") || !hasRow(s, "3", "chrome") {
+		t.Errorf("top lacks python3.14 at 74.1%%, or chrome's 3 PIDs")
+	}
+	if s := run("functions --pid", func() error {
+		q := q
+		q.PID = 2736
+		return Functions(ctx, q, "nvim")
+	}); !strings.HasPrefix(s, "nvim pid 2736 ·") || !strings.Contains(s, "8 samples") {
+		t.Errorf("functions --pid isn't nvim's PID 2736 alone (8 of 11 samples)")
 	}
 	if s := run("functions", func() error { return Functions(ctx, q, "python3.14") }); !strings.Contains(s, "37.8%  fib (/app/src/myapp/main.py:18)") {
 		t.Errorf("functions lacks fib at 37.8%% total, at main.py:18")
@@ -103,4 +111,14 @@ func TestCommands(t *testing.T) {
 	if err := json.Unmarshal(out.Bytes(), &got); err != nil || len(got.Loops) != 1 || got.Loops[0].Callbacks[0].Kind != "wait" {
 		t.Errorf("loop --json = %+v, %v", got, err)
 	}
+}
+
+// hasRow: a line of s holds these columns, next to each other.
+func hasRow(s string, cols ...string) bool {
+	for _, line := range strings.Split(s, "\n") {
+		if strings.Contains(" "+strings.Join(strings.Fields(line), " ")+" ", " "+strings.Join(cols, " ")+" ") {
+			return true
+		}
+	}
+	return false
 }

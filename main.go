@@ -66,7 +66,7 @@ const usage = `kenbun: OTLP profiles in your terminal
   kenbun functions <process> [source] [flags]   a process's hottest functions, self and total
   kenbun diff <process> [source] [flags]        functions that changed vs the window before
   kenbun loop <process> [source] [flags]        asyncio event loop: blocked %, callbacks cpu vs wait
-      flags: --since 5m, --limit 20, --json
+      flags: --since 5m, --limit 20, --json, --pid n (one of the process's PIDs, as top lists them)
 
   source, where the profiles are (the same for every command above):
       (none)                  this machine: the TUI collects them; queries ask the kenbun running here
@@ -367,6 +367,7 @@ func queryFlags(fs *flag.FlagSet, q *cli.Query) {
 	fs.DurationVar(&q.Since, "since", 5*time.Minute, "window: the last duration (30s, 5m, 1h)")
 	fs.IntVar(&q.Limit, "limit", 20, "rows to show (0: all)")
 	fs.BoolVar(&q.JSON, "json", false, "print JSON")
+	fs.Int64Var(&q.PID, "pid", 0, "only this PID of the process (top lists them)")
 }
 
 // parseQuery parses flags on either side of the process name, which every

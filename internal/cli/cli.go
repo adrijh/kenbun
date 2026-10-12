@@ -22,8 +22,8 @@ import (
 // Source is what the commands read: *store.Store or *api.Client.
 type Source interface {
 	Processes(ctx context.Context, from, to time.Time) ([]store.ProcStat, error)
-	Stacks(ctx context.Context, process string, from, to time.Time) ([]store.StackWeight, error)
-	ThreadStacks(ctx context.Context, process string, from, to time.Time) ([]store.ThreadStack, error)
+	Stacks(ctx context.Context, process string, pid int64, from, to time.Time) ([]store.StackWeight, error)
+	ThreadStacks(ctx context.Context, process string, pid int64, from, to time.Time) ([]store.ThreadStack, error)
 	Oldest(ctx context.Context) (time.Time, error)
 }
 
@@ -32,6 +32,7 @@ type Query struct {
 	Src   Source
 	Since time.Duration // window: [End-Since, End)
 	End   time.Time     // zero: now
+	PID   int64         // one process instance, not all with the name; 0: all
 	Limit int           // rows; <= 0: all
 	JSON  bool
 	Out   io.Writer
@@ -71,6 +72,14 @@ func (q Query) last() string {
 	return "last " + since(q.Since)
 }
 
+// name is the process as the headers show it: with its pid if one was picked.
+func (q Query) name(proc string) string {
+	if q.PID != 0 {
+		return fmt.Sprintf("%s pid %d", proc, q.PID)
+	}
+	return proc
+}
+
 func (q Query) window() (from, to time.Time) {
 	to = q.End
 	if to.IsZero() {
@@ -79,11 +88,7 @@ func (q Query) window() (from, to time.Time) {
 	return to.Add(-q.Since), to
 }
 
-// millicores turns on-CPU samples over the window into average CPU used, in
-// thousandths of a core (Kubernetes' unit).
-func (q Query) millicores(samples int64) int64 {
-	return int64(math.Round(float64(samples) * 1000 / (store.SamplesPerSecond * q.Since.Seconds())))
-}
+func (q Query) millicores(samples int64) int64 { return store.Millicores(samples, q.Since) }
 
 type window struct {
 	Since   string    `json:"since"`
@@ -109,15 +114,27 @@ func Top(ctx context.Context, q Query) error {
 	for _, p := range procs {
 		all += p.Weight
 	}
+	type pid struct {
+		PID        int64 `json:"pid"`
+		Millicores int64 `json:"millicores"`
+	}
 	type row struct {
 		Process    string  `json:"process"`
 		Millicores int64   `json:"millicores"`
 		Samples    int64   `json:"samples"`
-		Share      float64 `json:"share"` // % of all CPU kenbun saw
+		Share      float64 `json:"share"`          // % of all CPU kenbun saw
+		PIDs       []pid   `json:"pids,omitempty"` // when there are several, for --pid
 	}
 	rows := make([]row, 0, len(procs))
 	for _, p := range limit(procs, q.Limit) {
-		rows = append(rows, row{p.Name, q.millicores(p.Weight), p.Weight, pct(p.Weight, all)})
+		r := row{p.Name, q.millicores(p.Weight), p.Weight, pct(p.Weight, all), nil}
+		for _, ps := range p.PIDs {
+			r.PIDs = append(r.PIDs, pid{ps.PID, q.millicores(ps.Weight)})
+		}
+		if len(r.PIDs) < 2 {
+			r.PIDs = nil
+		}
+		rows = append(rows, r)
 	}
 	if q.JSON {
 		return q.json(struct {
@@ -132,8 +149,12 @@ func Top(ctx context.Context, q Query) error {
 		fmt.Fprintln(q.Out, "no samples")
 		return nil
 	}
-	return table(q.Out, "CPU\tSHARE\t  PROCESS", rows, func(r row) string {
-		return fmt.Sprintf("%dm\t%.1f%%\t  %s", r.Millicores, r.Share, r.Process)
+	return table(q.Out, "CPU\tSHARE\tPIDS\t  PROCESS", rows, func(r row) string {
+		pids := ""
+		if len(r.PIDs) > 0 {
+			pids = fmt.Sprint(len(r.PIDs))
+		}
+		return fmt.Sprintf("%dm\t%.1f%%\t%s\t  %s", r.Millicores, r.Share, pids, r.Process)
 	})
 }
 
@@ -142,7 +163,7 @@ func Top(ctx context.Context, q Query) error {
 func Functions(ctx context.Context, q Query, proc string) error {
 	q.fit(ctx, 1)
 	from, to := q.window()
-	stacks, err := q.Src.Stacks(ctx, proc, from, to)
+	stacks, err := q.Src.Stacks(ctx, proc, q.PID, from, to)
 	if err != nil {
 		return err
 	}
@@ -161,12 +182,13 @@ func Functions(ctx context.Context, q Query, proc string) error {
 		return q.json(struct {
 			window
 			Process    string `json:"process"`
+			PID        int64  `json:"pid,omitempty"`
 			Millicores int64  `json:"millicores"`
 			Samples    int64  `json:"samples"`
 			Functions  []row  `json:"functions"`
-		}{q.head(), proc, q.millicores(all), all, rows})
+		}{q.head(), proc, q.PID, q.millicores(all), all, rows})
 	}
-	fmt.Fprintf(q.Out, "%s · %s · %dm CPU · %d samples\n\n", proc, q.last(), q.millicores(all), all)
+	fmt.Fprintf(q.Out, "%s · %s · %dm CPU · %d samples\n\n", q.name(proc), q.last(), q.millicores(all), all)
 	if len(rows) == 0 {
 		fmt.Fprintln(q.Out, "no samples for this process ('kenbun top' lists them)")
 		return nil
@@ -181,11 +203,11 @@ func Functions(ctx context.Context, q Query, proc string) error {
 func Diff(ctx context.Context, q Query, proc string) error {
 	q.fit(ctx, 2)
 	from, to := q.window()
-	cur, err := q.Src.Stacks(ctx, proc, from, to)
+	cur, err := q.Src.Stacks(ctx, proc, q.PID, from, to)
 	if err != nil {
 		return err
 	}
-	prev, err := q.Src.Stacks(ctx, proc, from.Add(-q.Since), from)
+	prev, err := q.Src.Stacks(ctx, proc, q.PID, from.Add(-q.Since), from)
 	if err != nil {
 		return err
 	}
@@ -227,15 +249,16 @@ func Diff(ctx context.Context, q Query, proc string) error {
 		return q.json(struct {
 			window
 			Process          string `json:"process"`
+			PID              int64  `json:"pid,omitempty"`
 			Millicores       int64  `json:"millicores"`
 			MillicoresBefore int64  `json:"millicores_before"`
 			Samples          int64  `json:"samples"`
 			SamplesBefore    int64  `json:"samples_before"`
 			Functions        []row  `json:"functions"`
-		}{q.head(), proc, q.millicores(curN), q.millicores(prevN), curN, prevN, rows})
+		}{q.head(), proc, q.PID, q.millicores(curN), q.millicores(prevN), curN, prevN, rows})
 	}
 	fmt.Fprintf(q.Out, "%s · %s vs the %s before · %dm → %dm CPU · %d → %d samples\n\n",
-		proc, q.last(), since(q.Since), q.millicores(prevN), q.millicores(curN), prevN, curN)
+		q.name(proc), q.last(), since(q.Since), q.millicores(prevN), q.millicores(curN), prevN, curN)
 	if curN == 0 || prevN == 0 {
 		fmt.Fprintln(q.Out, "nothing to compare: no samples in one of the windows")
 		return nil
@@ -250,7 +273,7 @@ func Diff(ctx context.Context, q Query, proc string) error {
 func Loop(ctx context.Context, q Query, proc string) error {
 	q.fit(ctx, 1)
 	from, to := q.window()
-	ts, err := q.Src.ThreadStacks(ctx, proc, from, to)
+	ts, err := q.Src.ThreadStacks(ctx, proc, q.PID, from, to)
 	if err != nil {
 		return err
 	}
@@ -287,10 +310,11 @@ func Loop(ctx context.Context, q Query, proc string) error {
 		return q.json(struct {
 			window
 			Process string `json:"process"`
+			PID     int64  `json:"pid,omitempty"`
 			Loops   []loop `json:"loops"`
-		}{q.head(), proc, loops})
+		}{q.head(), proc, q.PID, loops})
 	}
-	fmt.Fprintf(q.Out, "%s · %s\n", proc, q.last())
+	fmt.Fprintf(q.Out, "%s · %s\n", q.name(proc), q.last())
 	if len(loops) == 0 {
 		fmt.Fprintln(q.Out, "\nno asyncio event loop (needs Python frames; waiting needs off-CPU samples)")
 		return nil

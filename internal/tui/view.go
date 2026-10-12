@@ -4,11 +4,14 @@ import (
 	"fmt"
 	"math"
 	"path"
+	"slices"
 	"strings"
 	"time"
 
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
+
+	"github.com/adrijh/kenbun/internal/store"
 )
 
 // Theme: Kanagawa (Hokusai's Great Wave), the common dark terminal theme, so
@@ -54,12 +57,18 @@ var screenNames = map[screen][2]string{ // english, japanese
 	screenLoop:  {"LOOP", "ループ"},
 }
 
-var keys = map[screen][][2]string{
-	screenProcs: {{"↑↓", "move"}, {"enter", "open"}, {"w", "window"}, {"p", "pause"}, {"q", "quit"}},
-	screenTop:   {{"↑↓", "move"}, {"enter", "show in flame"}, {"tab", "flame"}, {"a", "asyncio loop"}, {"d", "diff"}, {"w", "window"}, {"p", "pause"}, {"esc", "back"}},
-	screenFlame: {{"←↑↓→", "move"}, {"enter", "zoom"}, {"esc", "zoom out/back"}, {"/", "search"}, {"tab", "functions"}, {"a", "asyncio loop"}, {"w", "window"}, {"p", "pause"}},
-	screenLoop:  {{"esc", "functions"}, {"w", "window"}, {"p", "pause"}, {"q", "quit"}},
-}
+// keys are each screen's own, in the footer as far as they fit and all in the
+// ? help, followed by common.
+var (
+	keys = map[screen][][2]string{
+		screenProcs: {{"↑↓", "move"}, {"enter", "open"}, {"→←", "PIDs"}, {"/", "filter"}},
+		screenTop:   {{"↑↓", "move"}, {"enter", "show in flame"}, {"/", "filter"}, {"tab", "flame"}, {"a", "asyncio loop"}, {"d", "diff"}, {"esc", "back"}},
+		screenFlame: {{"←↑↓→", "move"}, {"enter", "zoom"}, {"esc", "zoom out/back"}, {"/", "search"}, {"tab", "functions"}, {"a", "asyncio loop"}},
+		screenLoop:  {{"esc", "functions"}},
+	}
+	common   = [][2]string{{"[ ]", "earlier/later"}, {"w", "window"}, {"p", "pause"}, {"q", "quit"}}
+	listKeys = [][2]string{{"pgup pgdn", "page"}, {"g G", "first/last"}, {"esc", "clear the filter"}}
+)
 
 func (m model) width() int {
 	if m.w == 0 {
@@ -77,14 +86,16 @@ func (m model) View() tea.View {
 		rows = max(1, m.h-4) // header, rule, error, footer
 	}
 
-	switch m.screen {
-	case screenProcs:
+	switch {
+	case m.help:
+		m.viewHelp(&b)
+	case m.screen == screenProcs:
 		m.viewProcs(&b, rows)
-	case screenTop:
+	case m.screen == screenTop:
 		m.viewTop(&b, rows)
-	case screenFlame:
+	case m.screen == screenFlame:
 		m.viewFlame(&b, rows)
-	case screenLoop:
+	case m.screen == screenLoop:
 		m.viewLoop(&b, rows)
 	}
 
@@ -115,7 +126,11 @@ func (m model) header() string {
 	}
 	left += crumb(screenProcs)
 	if m.screen != screenProcs {
-		left += dimS.Render(" ❯ ") + boldS.Render(m.proc) + dimS.Render(" ❯ ") + crumb(m.screen)
+		left += dimS.Render(" ❯ ") + boldS.Render(m.proc)
+		if m.pid != 0 {
+			left += dimS.Render(" pid ") + boldS.Render(fmt.Sprint(m.pid))
+		}
+		left += dimS.Render(" ❯ ") + crumb(m.screen)
 	}
 
 	var chips []string
@@ -145,10 +160,16 @@ func (m model) header() string {
 	return left
 }
 
+// footer: the keys that fit, and always how to see them all.
 func (m model) footer() string {
+	key := func(k [2]string) string { return redS.Render(k[0]) + " " + dimS.Render(k[1]) }
+	if m.help {
+		return key([2]string{"any key", "close"})
+	}
+	last := key([2]string{"?", "help"})
 	var parts []string
-	used := 0
-	for _, k := range keys[m.screen] {
+	used := lipgloss.Width(last)
+	for _, k := range slices.Concat(keys[m.screen], common) {
 		if k[0] == "a" && !m.hasLoop() {
 			continue
 		}
@@ -157,9 +178,45 @@ func (m model) footer() string {
 			break
 		}
 		used += w
-		parts = append(parts, redS.Render(k[0])+" "+dimS.Render(k[1]))
+		parts = append(parts, key(k))
 	}
-	return strings.Join(parts, "   ")
+	return strings.Join(append(parts, last), "   ")
+}
+
+func (m model) viewHelp(b *strings.Builder) {
+	b.WriteString("  " + accS.Bold(true).Render(screenNames[m.screen][0]) + dimS.Render(" keys") + "\n\n")
+	all := keys[m.screen]
+	if m.screen == screenProcs || m.screen == screenTop {
+		all = slices.Concat(all, listKeys)
+	}
+	for _, k := range slices.Concat(all, common) {
+		b.WriteString(fmt.Sprintf("  %s  %s\n", redS.Render(fmt.Sprintf("%10s", k[0])), k[1]))
+	}
+	b.WriteString("\n  " + dimS.Render("[ ] step the window back and forth by its size; ] past now goes live again") + "\n")
+}
+
+// filterLine shows a list's / filter while it's typed or applied.
+func (m model) filterLine(b *strings.Builder, q string, n, of int, what string) bool {
+	if q == "" && !m.searching {
+		return false
+	}
+	cursor := ""
+	if m.searching {
+		cursor = redS.Render("▌")
+	}
+	b.WriteString(dimS.Render("  filter ") + hit.Render(" /"+q+" ") + cursor +
+		dimS.Render(fmt.Sprintf("  %d of %d %s", n, of, what)) + "\n")
+	return true
+}
+
+// cpu is weight in the shown window as millicores, as 'kenbun top' gives it:
+// averaged over the part of the window there is data for, in whole seconds.
+func (m model) cpu(w int64) string {
+	span := m.window()
+	if !m.oldest.IsZero() {
+		span = min(span, m.asOf.Sub(m.oldest).Truncate(time.Second)+time.Second)
+	}
+	return fmt.Sprintf("%dm", store.Millicores(w, span))
 }
 
 func fmtDur(d time.Duration) string {
@@ -179,27 +236,57 @@ func (m model) viewProcs(b *strings.Builder, rows int) {
 		return
 	}
 	var all int64
-	nameW := 12
 	for _, p := range m.procs {
-		all += p.Weight
-		nameW = max(nameW, len([]rune(p.Name)))
+		all += p.Weight // shares stay of all processes, filtered or not
 	}
-	nameW = min(nameW, 40)
-	barW := max(0, min(32, m.width()-nameW-24))
+	procs := m.procRows()
+	if m.filterLine(b, m.procFilter, len(procs), len(m.procs), "processes") {
+		rows--
+	}
+	// A process with several PIDs says so; expanded, they're listed under it.
+	labels := make([][2]string, len(procs)) // name, dim suffix
+	nameW := 12
+	for i, r := range procs {
+		switch {
+		case r.pid != 0:
+			branch := "├"
+			if i+1 == len(procs) || procs[i+1].pid == 0 {
+				branch = "└"
+			}
+			labels[i] = [2]string{"", fmt.Sprintf("  %s pid %d", branch, r.pid)}
+		case r.pids > 1:
+			arrow := "▸"
+			if m.expanded[r.name] {
+				arrow = "▾"
+			}
+			labels[i] = [2]string{r.name, fmt.Sprintf(" %s %d pids", arrow, r.pids)}
+		default:
+			labels[i] = [2]string{r.name, ""}
+		}
+		nameW = max(nameW, len([]rune(labels[i][0]+labels[i][1])))
+	}
+	nameW = min(nameW, 48)
+	barW := max(0, min(32, m.width()-nameW-22))
 
-	b.WriteString(dimS.Render(fmt.Sprintf("  %-*s %8s %7s  %s", nameW, "PROCESS", "SAMPLES", "SHARE", "")) + "\n")
+	b.WriteString(dimS.Render(fmt.Sprintf("  %-*s %7s %7s  %s", nameW, "PROCESS", "CPU", "SHARE", "")) + "\n")
 	rows--
 	start := max(0, m.pcur-rows+1)
-	for i := start; i < min(len(m.procs), start+rows); i++ {
-		p := m.procs[i]
-		share := pct(p.Weight, all)
-		cols := fmt.Sprintf("%-*s %8d %6.1f%%  ", nameW, fit(p.Name, nameW), p.Weight, share)
+	for i := start; i < min(len(procs), start+rows); i++ {
+		r, l := procs[i], labels[i]
+		share := pct(r.weight, all)
+		suffix := []rune(l[1])
+		if len(suffix) > nameW {
+			suffix = suffix[:nameW]
+		}
+		name := strings.TrimRight(fit(l[0], nameW-len(suffix)), " ")
+		pad := strings.Repeat(" ", max(0, nameW-len([]rune(name))-len(suffix)))
+		cols := fmt.Sprintf(" %7s %6.1f%%  ", m.cpu(r.weight), share)
 		bar := bar(share/100, barW)
 		if i == m.pcur {
-			b.WriteString(selS.Render("▶ "+cols+bar) + "\n")
+			b.WriteString(selS.Render("▶ "+name+string(suffix)+pad+cols+bar) + "\n")
 			continue
 		}
-		b.WriteString("  " + cols + heat(share).Render(bar) + "\n")
+		b.WriteString("  " + name + dimS.Render(string(suffix)) + pad + cols + heat(share).Render(bar) + "\n")
 	}
 }
 
@@ -207,6 +294,10 @@ func (m model) viewTop(b *strings.Builder, rows int) {
 	if len(m.top) == 0 {
 		b.WriteString(dimS.Render("  no samples in window") + "\n")
 		return
+	}
+	funcs := m.funcs()
+	if m.filterLine(b, m.funcFilter, len(funcs), len(m.top), "functions") {
+		rows--
 	}
 	var total int64
 	if m.tree != nil {
@@ -228,12 +319,12 @@ func (m model) viewTop(b *strings.Builder, rows int) {
 	// Locations line up right after the longest name on screen, not at the
 	// far edge of a wide terminal.
 	longest := 0
-	for _, f := range m.top[start:min(len(m.top), start+rows)] {
+	for _, f := range funcs[start:min(len(funcs), start+rows)] {
 		longest = max(longest, len([]rune(f.Name))+2+len([]rune(shortLoc(f.Loc))))
 	}
 	nameW = min(nameW, longest)
-	for i := start; i < min(len(m.top), start+rows); i++ {
-		f := m.top[i]
+	for i := start; i < min(len(funcs), start+rows); i++ {
+		f := funcs[i]
 		self, tot := pct(f.Self, total), pct(f.Total, total)
 		isSel := i == m.tcur
 

@@ -38,6 +38,9 @@ Every query takes one source flag; pick it once and keep it on every command.
 
 Shared flags: `--since 5m` (window; data goes back 30m, so `diff` takes at most
 `--since 15m`, as it also reads the window before), `--limit 20`, `--json`.
+A process name can cover several processes (`top`'s PIDS column counts them;
+`top --json` lists each PID with its CPU): `--pid n` narrows `functions`, `diff`
+and `loop` to one.
 Process names come from `top`, exactly as printed: `service/container` for pods
 (`argo-cd/redis`), the executable elsewhere (`kubelet`, `python3.14`). kenbun hides
 itself, so its own pods (the `kenbun` deployment and the `kenbun-profiler` agents,

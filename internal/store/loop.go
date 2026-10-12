@@ -2,6 +2,7 @@ package store
 
 import (
 	"cmp"
+	"math"
 	"slices"
 	"strings"
 	"time"
@@ -14,6 +15,12 @@ const (
 	SamplesPerSecond = 97  // prime: avoids lockstep with periodic work
 	OffCPUThreshold  = 0.2 // share of context switches the off-CPU probe records
 )
+
+// Millicores turns on-CPU samples over d into average CPU used, in thousandths
+// of a core (Kubernetes' unit).
+func Millicores(samples int64, d time.Duration) int64 {
+	return int64(math.Round(float64(samples) * 1000 / (SamplesPerSecond * d.Seconds())))
+}
 
 // LoopFrame runs every iteration of an asyncio event loop.
 const LoopFrame = "BaseEventLoop._run_once"

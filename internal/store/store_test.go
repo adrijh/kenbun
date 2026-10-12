@@ -3,14 +3,15 @@ package store
 import (
 	"context"
 	"database/sql"
+	"reflect"
 	"testing"
 	"time"
 
 	_ "modernc.org/sqlite" // a test-only driver: package store itself imports none
 )
 
-func TestPruneStacks(t *testing.T) {
-	ctx := context.Background()
+func open(t *testing.T) *Store {
+	t.Helper()
 	db, err := sql.Open("sqlite", ":memory:")
 	if err != nil {
 		t.Fatal(err)
@@ -20,7 +21,40 @@ func TestPruneStacks(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer s.Close()
+	t.Cleanup(func() { s.Close() })
+	return s
+}
+
+func TestPIDs(t *testing.T) {
+	ctx := context.Background()
+	s := open(t)
+	t0 := time.Unix(1000, 0)
+	if err := s.Ingest(ctx, []Sample{
+		{TS: t0, Process: "web", PID: 1, Frames: []string{"a"}, Weight: 1},
+		{TS: t0, Process: "web", PID: 2, Frames: []string{"b"}, Weight: 3},
+		{TS: t0, Process: "db", PID: 3, Frames: []string{"c"}, Weight: 2},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	ps, err := s.Processes(ctx, t0, t0.Add(time.Second))
+	want := []ProcStat{
+		{"web", 4, []PIDStat{{2, 3}, {1, 1}}},
+		{"db", 2, []PIDStat{{3, 2}}},
+	}
+	if err != nil || !reflect.DeepEqual(ps, want) {
+		t.Fatalf("Processes = %+v, %v; want %+v", ps, err, want)
+	}
+	for pid, frame := range map[int64]string{0: "", 1: "a", 2: "b"} {
+		got, err := s.Stacks(ctx, "web", pid, t0, t0.Add(time.Second))
+		if err != nil || (pid == 0) != (len(got) == 2) || (pid != 0 && got[0].Frames[0] != frame) {
+			t.Errorf("Stacks(web, pid %d) = %+v, %v", pid, got, err)
+		}
+	}
+}
+
+func TestPruneStacks(t *testing.T) {
+	ctx := context.Background()
+	s := open(t)
 
 	t0 := time.Unix(1000, 0)
 	old := Sample{TS: t0, Process: "p", Frames: []string{"old"}, Weight: 1}
@@ -41,7 +75,7 @@ func TestPruneStacks(t *testing.T) {
 	if err := s.Ingest(ctx, []Sample{old}); err != nil {
 		t.Fatal(err)
 	}
-	got, err := s.Stacks(ctx, "p", old.TS, old.TS.Add(time.Second))
+	got, err := s.Stacks(ctx, "p", 0, old.TS, old.TS.Add(time.Second))
 	if err != nil || len(got) != 1 || got[0].Frames[0] != "old" {
 		t.Errorf("Stacks after re-ingest = %+v, %v; want the old stack", got, err)
 	}

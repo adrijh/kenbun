@@ -30,11 +30,11 @@ func TestFixtureEndToEnd(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(procs) == 0 || procs[0] != (store.ProcStat{Name: "python3.14", Weight: 657}) {
+	if len(procs) == 0 || procs[0].Name != "python3.14" || procs[0].Weight != 657 {
 		t.Fatalf("Processes()[0] = %+v, want python3.14/657", procs)
 	}
 
-	stacks, err := st.Stacks(ctx, "python3.14", time.Time{}, time.Now().Add(time.Hour))
+	stacks, err := st.Stacks(ctx, "python3.14", 0, time.Time{}, time.Now().Add(time.Hour))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -67,7 +67,7 @@ func TestAsyncioLoopFixture(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	ts, err := st.ThreadStacks(ctx, "python3.14", time.Time{}, time.Now().Add(time.Hour))
+	ts, err := st.ThreadStacks(ctx, "python3.14", 0, time.Time{}, time.Now().Add(time.Hour))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -92,7 +92,7 @@ func TestAsyncioLoopFixture(t *testing.T) {
 	}
 
 	// Off-CPU must stay out of the on-CPU views.
-	stacks, err := st.Stacks(ctx, "python3.14", time.Time{}, time.Now().Add(time.Hour))
+	stacks, err := st.Stacks(ctx, "python3.14", 0, time.Time{}, time.Now().Add(time.Hour))
 	if err != nil {
 		t.Fatal(err)
 	}

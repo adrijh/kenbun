@@ -27,7 +27,7 @@ holding the asyncio event loop hostage.
 
 - **Zero setup.** `sudo kenbun --profile` profiles every process on the machine, no instrumentation.
 - **Any OTLP source.** An embedded OpenTelemetry Collector listens on `:4317`; point SDKs or other profilers at it.
-- **Processes → functions ⇄ flame graph**, over a 30s–15m window you can pause and diff.
+- **Processes → functions ⇄ flame graph**, over a 30s–15m window you can pause, step back through and diff. `/` filters, `?` lists the keys.
 - **Event loop blocking.** On- and off-CPU time tells you which callbacks block asyncio, and whether they burn CPU or wait.
 - **Kubernetes in one command.** `kenbun k8s deploy` runs a profiler on every node and kenbun to collect it.
 
@@ -123,11 +123,11 @@ commands that print a few lines of text, or JSON with `--json`:
 $ kenbun top --k8s --limit 4
 all processes · last 5m · 174m CPU · 5066 samples
 
-  CPU  SHARE  PROCESS
-  64m  36.7%  crio
-  34m  19.5%  pmdalinux
-  32m  18.6%  kubelet
-   5m   2.6%  argo-cd/application-controller
+  CPU  SHARE  PIDS  PROCESS
+  64m  36.7%        crio
+  34m  19.5%        pmdalinux
+  32m  18.6%        kubelet
+   5m   2.6%     2  argo-cd/application-controller
 
 $ kenbun loop python3.14 --since 1m
 python3.14 · last 1m
@@ -147,7 +147,8 @@ thread python: loop blocked 25.3% (cpu 8.4%, waiting 16.9%), idle 74.7%
 | `loop <process>` | Whether asyncio callbacks block the event loop, if they compute or wait, and on which line. |
 
 Every query takes a [source](#道--commands), `--since` (default `5m`), `--limit`
-(default `20`) and `--json`. Without a source they ask the kenbun running on this
+(default `20`) and `--json`; `functions`, `diff` and `loop` take `--pid` for one
+of a process's PIDs, which `top` counts and `top --json` lists. Without a source they ask the kenbun running on this
 machine (`kenbun`, or `sudo kenbun serve --profile` headless). On a `--file`
 capture, `--since` counts back from its end. The process name can come before or
 after the flags. Sample counts are in every header: with a few dozen samples,
@@ -243,9 +244,9 @@ The profiler needs nodes in the host PID namespace: real nodes, not k3d or kind
   way it reads the local store:
 
   ```text
-  GET /api/processes?from=&to=                → processes by on-CPU weight
-  GET /api/stacks?process=&from=&to=          → on-CPU stacks
-  GET /api/threadstacks?process=&from=&to=    → stacks per thread, on and off CPU
+  GET /api/processes?from=&to=                     → processes by on-CPU weight, with their PIDs
+  GET /api/stacks?process=&pid=&from=&to=          → on-CPU stacks
+  GET /api/threadstacks?process=&pid=&from=&to=    → stacks per thread, on and off CPU
   ```
 
   Times are unix nanoseconds, ranges are `[from, to)`.

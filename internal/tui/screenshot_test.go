@@ -57,14 +57,29 @@ func fixture(t *testing.T, file string) model {
 		last = maxTime(last, s.TS)
 	}
 	m := New(st, Options{At: last.Add(time.Nanosecond), Window: 5 * time.Minute, OTLP: "localhost:4317"}).(model)
-	m = step(m, m.load()())
+	m = settle(m, m.load())
 	m.paused = false // a capture opens paused; screenshots show the live header
 	return m
 }
 
 func (m model) open(s screen, proc string) model {
 	m.screen, m.proc = s, proc
-	return step(m, m.load()())
+	return settle(m, m.load())
+}
+
+// settle runs cmd and its batched commands, updating m with each result.
+func settle(m model, cmd tea.Cmd) model {
+	if cmd == nil {
+		return m
+	}
+	msg := cmd()
+	if batch, ok := msg.(tea.BatchMsg); ok {
+		for _, c := range batch {
+			m = settle(m, c)
+		}
+		return m
+	}
+	return step(m, msg)
 }
 
 func step(m model, msg tea.Msg) model {

@@ -41,8 +41,8 @@ func TestClientMatchesStore(t *testing.T) {
 		t.Fatalf("Processes = %v, %v; want %v", got, err, want)
 	}
 
-	wantSt, _ := st.Stacks(ctx, "python3.14", from, to)
-	gotSt, err := c.Stacks(ctx, "python3.14", from, to)
+	wantSt, _ := st.Stacks(ctx, "python3.14", 0, from, to)
+	gotSt, err := c.Stacks(ctx, "python3.14", 0, from, to)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -55,8 +55,8 @@ func TestClientMatchesStore(t *testing.T) {
 		t.Errorf("Oldest = %v, %v; want %v", gotOld, err, wantOld)
 	}
 
-	wantTS, _ := st.ThreadStacks(ctx, "python3.14", from, to)
-	gotTS, err := c.ThreadStacks(ctx, "python3.14", from, to)
+	wantTS, _ := st.ThreadStacks(ctx, "python3.14", 0, from, to)
+	gotTS, err := c.ThreadStacks(ctx, "python3.14", 0, from, to)
 	if err != nil {
 		t.Fatal(err)
 	}

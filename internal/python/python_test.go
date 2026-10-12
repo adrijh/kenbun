@@ -67,6 +67,23 @@ func TestName(t *testing.T) {
 	}
 }
 
+// uvicorn --reload's server is `python -c ...`, started by the reloader.
+func TestAdopt(t *testing.T) {
+	procs := map[int64]proc{
+		1: {name: "zsh-started"},
+		2: {name: "uvicorn", ppid: 1},
+		3: {name: "python -c", ppid: 2},
+		4: {name: "python -c", ppid: 3},  // its own worker
+		5: {name: "python -c", ppid: 99}, // a parent that isn't Python
+	}
+	adopt(procs)
+	for pid, want := range map[int64]string{1: "zsh-started", 2: "uvicorn", 3: "uvicorn", 4: "uvicorn", 5: "python -c"} {
+		if procs[pid].name != want {
+			t.Errorf("pid %d is %q, want %q", pid, procs[pid].name, want)
+		}
+	}
+}
+
 func TestIsPython(t *testing.T) {
 	for path, want := range map[string]bool{
 		"/usr/bin/python3.14": true,
@@ -87,9 +104,9 @@ func TestIsPython(t *testing.T) {
 func TestProcesses(t *testing.T) {
 	t0 := time.Unix(1000, 0)
 	snaps := []snapshot{
-		{t0, map[int64]proc{1: {"api", 10 * time.Second}, 2: {"api", time.Second}}},
-		{t0.Add(10 * time.Second), map[int64]proc{1: {"api", 12 * time.Second}, 2: {"api", 6 * time.Second}}},
-		{t0.Add(20 * time.Second), map[int64]proc{1: {"api", 13 * time.Second}, 3: {"worker", time.Second}}}, // 2 exited, 3 started
+		{t0, map[int64]proc{1: {name: "api", cpu: 10 * time.Second}, 2: {name: "api", cpu: time.Second}}},
+		{t0.Add(10 * time.Second), map[int64]proc{1: {name: "api", cpu: 12 * time.Second}, 2: {name: "api", cpu: 6 * time.Second}}},
+		{t0.Add(20 * time.Second), map[int64]proc{1: {name: "api", cpu: 13 * time.Second}, 3: {name: "worker", cpu: time.Second}}}, // 2 exited, 3 started
 	}
 	s := func(d time.Duration) int64 { return int64(d.Seconds() * store.SamplesPerSecond) }
 

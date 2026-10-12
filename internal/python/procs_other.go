@@ -22,17 +22,18 @@ func list() (map[int64]proc, error) {
 	if err != nil {
 		return nil, err
 	}
-	cmds, err := ps("time=,args=")
+	cmds, err := ps("ppid=,time=,args=")
 	if err != nil {
 		return nil, err
 	}
 	out := map[int64]proc{}
 	for pid, line := range cmds {
 		f := strings.Fields(line)
-		if len(f) < 2 || (!isPython(exes[pid]) && !isPython(f[1])) {
+		if len(f) < 3 || (!isPython(exes[pid]) && !isPython(f[2])) {
 			continue
 		}
-		out[pid] = proc{name: name(f[1:]), cpu: cpuTime(f[0])}
+		ppid, _ := strconv.ParseInt(f[0], 10, 64)
+		out[pid] = proc{name: name(f[2:]), ppid: ppid, cpu: cpuTime(f[1])}
 	}
 	return out, nil
 }

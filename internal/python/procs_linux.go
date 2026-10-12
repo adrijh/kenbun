@@ -39,21 +39,24 @@ func list() (map[int64]proc, error) {
 		if err != nil {
 			continue
 		}
-		out[pid] = proc{name: name(args), cpu: statCPU(string(stat))}
+		ppid, cpu := statFields(string(stat))
+		out[pid] = proc{name: name(args), ppid: ppid, cpu: cpu}
 	}
 	return out, nil
 }
 
-// statCPU is utime + stime from /proc/<pid>/stat, fields 14 and 15. They're
-// counted after the command, which is in parentheses and may contain spaces.
-func statCPU(stat string) time.Duration {
+// statFields is the parent and utime + stime from /proc/<pid>/stat, fields 4,
+// 14 and 15. They're counted after the command, which is in parentheses and
+// may contain spaces.
+func statFields(stat string) (ppid int64, cpu time.Duration) {
 	f := strings.Fields(stat[strings.LastIndexByte(stat, ')')+1:])
 	if len(f) < 13 {
-		return 0
+		return 0, 0
 	}
+	ppid, _ = strconv.ParseInt(f[1], 10, 64)
 	utime, _ := strconv.ParseInt(f[11], 10, 64)
 	stime, _ := strconv.ParseInt(f[12], 10, 64)
-	return time.Duration(utime+stime) * clockTick
+	return ppid, time.Duration(utime+stime) * clockTick
 }
 
 // inspect is how pid runs: its interpreter, arguments, environment and owner.

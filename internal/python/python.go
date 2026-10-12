@@ -56,6 +56,7 @@ type snapshot struct {
 
 type proc struct {
 	name string
+	ppid int64
 	cpu  time.Duration // used since it started
 }
 
@@ -108,6 +109,7 @@ func (s *Source) poll() error {
 	if err != nil {
 		return fmt.Errorf("listing processes: %w", err)
 	}
+	adopt(procs)
 	now := time.Now()
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -513,6 +515,24 @@ func tachyonFrame(f string) (name, loc string) {
 func lastLine(b []byte) string {
 	lines := strings.Split(strings.TrimSpace(string(b)), "\n")
 	return strings.TrimSpace(lines[len(lines)-1])
+}
+
+// adopt names the `python -c` processes another Python process started after
+// it: multiprocessing's spawned workers and resource tracker, uvicorn
+// --reload's server. Opening the parent's row then samples them too.
+func adopt(procs map[int64]proc) {
+	for pid, p := range procs {
+		q := p
+		for range 16 { // a parent chain, not a loop, but cheap to be sure
+			parent, ok := procs[q.ppid]
+			if q.name != "python -c" || !ok {
+				break
+			}
+			q = parent
+		}
+		p.name = q.name
+		procs[pid] = p
+	}
 }
 
 var pythonExe = regexp.MustCompile(`(?i)^python[0-9.]*[tw]?$`)

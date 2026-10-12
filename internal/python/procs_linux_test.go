@@ -6,11 +6,11 @@ import (
 	"time"
 )
 
-func TestStatCPU(t *testing.T) {
+func TestStatFields(t *testing.T) {
 	// The command may hold spaces and parentheses; utime 250, stime 50 ticks.
-	stat := "4242 (python3 (x) y) S 1 4242 4242 0 -1 4194560 1234 0 0 0 250 50 0 0 20 0 2 0 99 0"
-	if got := statCPU(stat); got != 3*time.Second {
-		t.Errorf("statCPU = %v, want 3s", got)
+	stat := "4242 (python3 (x) y) S 17 4242 4242 0 -1 4194560 1234 0 0 0 250 50 0 0 20 0 2 0 99 0"
+	if ppid, cpu := statFields(stat); ppid != 17 || cpu != 3*time.Second {
+		t.Errorf("statFields = %d, %v, want 17, 3s", ppid, cpu)
 	}
 }
 

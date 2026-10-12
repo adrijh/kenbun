@@ -42,6 +42,7 @@ import (
 	"github.com/adrijh/kenbun/internal/cli"
 	"github.com/adrijh/kenbun/internal/ingest"
 	"github.com/adrijh/kenbun/internal/k8s"
+	"github.com/adrijh/kenbun/internal/python"
 	"github.com/adrijh/kenbun/internal/store"
 	"github.com/adrijh/kenbun/internal/store/sqlite"
 	"github.com/adrijh/kenbun/internal/tui"
@@ -75,11 +76,13 @@ const usage = `kenbun: OTLP profiles in your terminal
       --file capture.jsonl    a capture from --dump, offline (.jsonl.gz too)
 
   collecting on this machine:
-      kenbun [--profile] [--otlp addr] [--dump file]
+      kenbun [--profile | --python] [--otlp addr] [--dump file]
                               with the TUI, which also serves queries on localhost:7070
       kenbun serve [--profile] [--otlp addr] [--dump file] [--http addr]
                               headless
       --profile runs the eBPF profiler on every process here (Linux, root)
+      --python lists the Python processes here, and profiles the one you open (root):
+               Python 3.15+ with its own profiler, older ones with py-spy from its venv or PATH
 
   kenbun k8s deploy [--context c] [--image i] [--profiler=false]
                               install kenbun + the eBPF profiler (kubectl apply)
@@ -215,6 +218,7 @@ func runLocal(args []string) error {
 	otlp := fs.String("otlp", "localhost:4317", "OTLP gRPC listen address")
 	dump := fs.String("dump", "", "also write received profiles to this JSONL file")
 	profile := fs.Bool("profile", false, "also profile this machine with the embedded eBPF profiler (Linux, needs root)")
+	py := fs.Bool("python", false, "list this machine's Python processes and profile the one opened: Tachyon (3.15+) or py-spy (needs root)")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -222,17 +226,26 @@ func runLocal(args []string) error {
 		return fmt.Errorf("unexpected %q\n\n%s", fs.Args(), usage)
 	}
 	collect := false
-	fs.Visit(func(f *flag.Flag) { collect = collect || f.Name == "otlp" || f.Name == "dump" || f.Name == "profile" })
+	fs.Visit(func(f *flag.Flag) {
+		collect = collect || f.Name == "otlp" || f.Name == "dump" || f.Name == "profile" || f.Name == "python"
+	})
 
 	if src.chosen() {
 		if collect {
-			return errors.New("--otlp, --dump and --profile collect on this machine: they don't go with --k8s, --addr or --file")
+			return errors.New("--otlp, --dump, --profile and --python collect on this machine: they don't go with --k8s, --addr or --file")
 		}
 		return showTUI(src)
 	}
 
 	if *profile && runtime.GOOS != "linux" {
 		return errors.New("--profile uses eBPF and only works on Linux")
+	}
+	if *profile && *py {
+		return errors.New("pick one of --profile (every process, eBPF) and --python (Python processes, py-spy)")
+	}
+	// Linux may allow ptrace without root (ptrace_scope 0, CAP_SYS_PTRACE); macOS never does.
+	if *py && runtime.GOOS == "darwin" && os.Geteuid() != 0 {
+		return errors.New("--python attaches profilers to processes, which needs root on macOS: sudo kenbun --python")
 	}
 	explicit := false
 	fs.Visit(func(f *flag.Flag) { explicit = explicit || f.Name == "otlp" })
@@ -260,6 +273,15 @@ func runLocal(args []string) error {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	go prune(ctx, st)
+	var tuiSrc tui.Source = st
+	if *py {
+		ps, err := python.New(ctx, st, retention)
+		if err != nil {
+			return err
+		}
+		defer ps.Close()
+		tuiSrc = ps
+	}
 
 	// Queries ('kenbun top') read what the TUI shows. Another kenbun may hold the
 	// port; then they read that one, and this TUI just doesn't serve them.
@@ -279,7 +301,7 @@ func runLocal(args []string) error {
 	if err != nil {
 		return err
 	}
-	if err := runTUI(tui.New(st, tui.Options{OTLP: *otlp}), col); err != nil {
+	if err := runTUI(tui.New(tuiSrc, tui.Options{OTLP: *otlp, Python: *py}), col); err != nil {
 		if strings.Contains(err.Error(), `"profiling" receiver`) && os.Geteuid() != 0 {
 			err = fmt.Errorf("%w\n--profile loads eBPF programs and needs root: sudo kenbun --profile", err)
 		}

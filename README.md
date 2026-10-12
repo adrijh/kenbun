@@ -60,7 +60,8 @@ sudo install kenbun /usr/local/bin/
 ```
 
 Swap in `linux_arm64`, `darwin_arm64` or `darwin_amd64`. On macOS everything works
-except `--profile` and `agent`, which need Linux. Or build from source (Go 1.27):
+except `--profile` and `agent`, which need Linux; `--python` profiles Python there.
+Or build from source (Go 1.27):
 
 ```bash
 make build    # bin/kenbun
@@ -70,6 +71,18 @@ Profile this machine (Linux 5.10+, amd64 or arm64, root for eBPF):
 
 ```bash
 sudo kenbun --profile
+```
+
+No eBPF (macOS)? Profile Python: kenbun lists the Python processes by CPU and
+samples the one you open, while it's open, with what its own environment has:
+Python 3.15's built-in profiler through its interpreter, or
+[py-spy](https://github.com/benfred/py-spy) from its venv or PATH
+(`uv add --dev py-spy`, `brew install py-spy`). With neither, `i` installs py-spy
+for kenbun alone, with that process's pip or uv, as you: into `~/.cache/kenbun`
+(`~/Library/Caches/kenbun` on macOS), not your project. No PIDs to look up.
+
+```bash
+sudo kenbun --python
 ```
 
 Or just receive profiles from your own OTLP senders. kenbun listens on
@@ -107,7 +120,7 @@ Collecting on this machine:
 
 | Command | |
 |---|---|
-| `kenbun [--profile] [--otlp addr] [--dump file]` | Receive profiles (`--profile`: also run the eBPF profiler) and open the TUI. It also answers queries on `localhost:7070`, so an agent can ask about what you're watching. |
+| `kenbun [--profile \| --python] [--otlp addr] [--dump file]` | Receive profiles (`--profile`: also run the eBPF profiler; `--python`: list Python processes and profile the one opened, with Python 3.15's profiler or py-spy) and open the TUI. It also answers queries on `localhost:7070`, so an agent can ask about what you're watching. |
 | `kenbun serve [--profile] [--otlp addr] [--dump file] [--http addr]` | The same without the TUI, for headless boxes. |
 | `kenbun k8s deploy \| destroy \| manifests` | Set kenbun up on a cluster. See [Kubernetes](#船--kubernetes). |
 

@@ -1,12 +1,14 @@
 package tui
 
 import (
+	"context"
 	"fmt"
 	"strings"
 	"testing"
 	"time"
 
 	tea "charm.land/bubbletea/v2"
+	"github.com/charmbracelet/x/ansi"
 
 	"github.com/adrijh/kenbun/internal/store"
 )
@@ -169,4 +171,32 @@ func key(k string) tea.KeyPressMsg {
 		return tea.KeyPressMsg{Code: tea.KeyRight}
 	}
 	return tea.KeyPressMsg{Code: []rune(k)[0], Text: k}
+}
+
+type fixable struct{ fixed *bool }
+
+func (fixable) Error() string { return "no profiler" }
+func (f fixable) Fix() (string, func(context.Context) error) {
+	return "install it", func(context.Context) error { *f.fixed = true; return nil }
+}
+
+// An error the source can fix is offered on i, and fixed while the TUI says so.
+func TestFix(t *testing.T) {
+	fixed := false
+	m := step(model{w: 100, h: 20}, errMsg{fmt.Errorf("pid 1: %w", fixable{&fixed})})
+	if v := ansi.Strip(m.View().Content); !strings.Contains(v, "i install it") {
+		t.Errorf("footer doesn't offer the fix:\n%s", v)
+	}
+	next, cmd := m.Update(key("i"))
+	m = next.(model)
+	if m.fixing != "install it" || cmd == nil || !strings.Contains(ansi.Strip(m.View().Content), "… install it") {
+		t.Fatalf("after i: fixing %q", m.fixing)
+	}
+	msg := cmd()
+	if !fixed {
+		t.Fatal("fix didn't run")
+	}
+	if m = step(m, msg); m.fixing != "" || m.err != nil {
+		t.Errorf("after the fix: fixing %q, err %v", m.fixing, m.err)
+	}
 }

@@ -6,6 +6,7 @@ package tui
 
 import (
 	"context"
+	"errors"
 	"slices"
 	"strings"
 	"time"
@@ -23,10 +24,18 @@ type Source interface {
 	Oldest(ctx context.Context) (time.Time, error)
 }
 
+// Fixer is an error the source can fix when asked, such as a missing profiler
+// it can install: the TUI offers it on i.
+type Fixer interface {
+	error
+	Fix() (what string, fix func(context.Context) error)
+}
+
 type Options struct {
 	At     time.Time     // non-zero: start paused with the window ending here (offline files)
 	Window time.Duration // initial window, rounded up to a preset; 0 = 1m
 	OTLP   string        // where this process receives OTLP, if it does
+	Python bool          // the process list is Python processes, profiled when opened (--python)
 }
 
 var windows = []time.Duration{30 * time.Second, time.Minute, 5 * time.Minute, 15 * time.Minute}
@@ -61,14 +70,17 @@ type (
 	}
 	oldestMsg struct{ t time.Time }
 	errMsg    struct{ err error }
+	fixedMsg  struct{ err error }
 )
 
 type model struct {
-	src  Source
-	otlp string
-	w, h int
-	err  error
-	gen  int // bumped whenever query parameters change; older results are dropped
+	src    Source
+	otlp   string
+	python bool
+	w, h   int
+	err    error
+	fixing string // what a Fixer is doing, while it does
+	gen    int    // bumped whenever query parameters change; older results are dropped
 
 	win    int // index into windows
 	paused bool
@@ -108,7 +120,7 @@ type model struct {
 }
 
 func New(src Source, o Options) tea.Model {
-	m := model{src: src, win: 1, otlp: o.OTLP, last: o.At, expanded: map[string]bool{}}
+	m := model{src: src, win: 1, otlp: o.OTLP, python: o.Python, last: o.At, expanded: map[string]bool{}}
 	for o.Window > 0 && m.win < len(windows)-1 && windows[m.win] < o.Window {
 		m.win++
 	}
@@ -271,6 +283,12 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case errMsg:
 		m.err = msg.err
 
+	case fixedMsg:
+		m.fixing, m.err = "", msg.err
+		if msg.err == nil {
+			return m.reload()
+		}
+
 	case tea.KeyPressMsg:
 		if m.help { // any key closes it
 			m.help = false
@@ -294,6 +312,16 @@ func (m model) key(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	case "?":
 		m.help = true
 		return m, nil
+	case "i":
+		if f := m.fixer(); f != nil && m.fixing == "" {
+			what, fix := f.Fix()
+			m.fixing = what
+			return m, func() tea.Msg {
+				ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+				defer cancel()
+				return fixedMsg{fix(ctx)}
+			}
+		}
 	case "w":
 		m.win = (m.win + 1) % len(windows)
 		return m.reload()
@@ -511,13 +539,26 @@ func contains(s, sub string) bool {
 }
 
 // hasLoop: the process runs an asyncio event loop, judging by on-CPU samples.
+// Never with --python: its profilers give no off-CPU time, which LOOP needs.
 func (m model) hasLoop() bool {
+	if m.python {
+		return false
+	}
 	for _, f := range m.top {
 		if f.Name == store.LoopFrame {
 			return true
 		}
 	}
 	return false
+}
+
+// fixer is the error on screen if the source can fix it.
+func (m model) fixer() Fixer {
+	var f Fixer
+	if errors.As(m.err, &f) {
+		return f
+	}
+	return nil
 }
 
 func clamp(i, n int) int { return max(0, min(i, n-1)) }

@@ -274,12 +274,17 @@ func (s *Store) Processes(ctx context.Context, from, to time.Time) ([]ProcStat, 
 		out[i].Weight += p.Weight
 		out[i].PIDs = append(out[i].PIDs, p)
 	}
+	SortProcesses(out)
+	return out, rows.Err()
+}
+
+// SortProcesses orders processes, and each one's PIDs, heaviest first.
+func SortProcesses(ps []ProcStat) {
 	heaviest := func(a, b int64) int { return cmp.Compare(b, a) }
-	slices.SortFunc(out, func(a, b ProcStat) int { return cmp.Or(heaviest(a.Weight, b.Weight), cmp.Compare(a.Name, b.Name)) })
-	for _, p := range out {
+	slices.SortFunc(ps, func(a, b ProcStat) int { return cmp.Or(heaviest(a.Weight, b.Weight), cmp.Compare(a.Name, b.Name)) })
+	for _, p := range ps {
 		slices.SortFunc(p.PIDs, func(a, b PIDStat) int { return cmp.Or(heaviest(a.Weight, b.Weight), cmp.Compare(a.PID, b.PID)) })
 	}
-	return out, rows.Err()
 }
 
 // Stacks returns the on-CPU weight of each distinct stack of one process in

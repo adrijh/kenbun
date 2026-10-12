@@ -50,7 +50,7 @@ func Convert(pd pprofile.Profiles) []store.Sample {
 				samples := prof.Samples()
 				for s := 0; s < samples.Len(); s++ {
 					smp := samples.At(s)
-					frames, locs := r.frames(smp.StackIndex())
+					frames, locs := r.frames(smp.StackIndex(), pid)
 					// Only the LOOP view reads off-CPU time, and only inside an asyncio
 					// loop. Machine-wide it's ~5x the on-CPU rows, so drop the rest.
 					if offCPU && !slices.Contains(frames, store.LoopFrame) {
@@ -138,10 +138,11 @@ func newResolver(d pprofile.ProfilesDictionary) *resolver {
 	return &resolver{d: d, cache: map[int32]stack{}}
 }
 
-// frames returns function names and their file:line ("" if unknown, as for
-// native code), leaf first. Index 0 in every dictionary table is an empty
-// placeholder, so it's treated as "missing".
-func (r *resolver) frames(stackIdx int32) (frames, locs []string) {
+// frames returns function names and their file:line, leaf first. Native
+// functions get their library instead of a file:line. Index 0 in every
+// dictionary table is an empty placeholder, so it's treated as "missing".
+// pid only helps find native binaries: stacks are shared by processes.
+func (r *resolver) frames(stackIdx int32, pid int64) (frames, locs []string) {
 	if s, ok := r.cache[stackIdx]; ok {
 		return s.frames, s.locs
 	}
@@ -163,11 +164,17 @@ func (r *resolver) frames(stackIdx int32) (frames, locs []string) {
 		lines := loc.Lines()
 
 		if lines.Len() == 0 {
-			// Unsymbolized native frame: label it with its library and collapse
-			// runs (a Python stack starts with ~12 libpython frames otherwise).
+			// Native frame: name it from the binary's symbols if this machine
+			// has them (symbols.go). Otherwise label it with its library and
+			// collapse runs (a Python stack starts with ~12 libpython frames).
 			name := "[??]"
 			if mi := int(loc.MappingIndex()); mi > 0 && mi < maps.Len() {
-				if f := r.str(maps.At(mi).FilenameStrindex()); f != "" {
+				m := maps.At(mi)
+				if f := r.str(m.FilenameStrindex()); f != "" {
+					if fn := symbolize(r.attr(m.AttributeIndices(), "process.executable.build_id.gnu"), f, pid, loc.Address()); fn != "" {
+						frames, locs = append(frames, fn), append(locs, path.Base(f))
+						continue
+					}
 					name = "[" + path.Base(f) + "]"
 				}
 			}
@@ -199,18 +206,20 @@ func (r *resolver) frames(stackIdx int32) (frames, locs []string) {
 	return frames, locs
 }
 
-// thread returns the sample's thread.name (the kernel comm), or "".
-func (r *resolver) thread(s pprofile.Sample) string {
+// attr returns the string attribute key among the dictionary attributes at idx.
+func (r *resolver) attr(idx pcommon.Int32Slice, key string) string {
 	attrs := r.d.AttributeTable()
-	idx := s.AttributeIndices()
 	for i := 0; i < idx.Len(); i++ {
-		if ai := int(idx.At(i)); ai > 0 && ai < attrs.Len() {
-			if a := attrs.At(ai); r.str(a.KeyStrindex()) == "thread.name" {
-				return a.Value().Str()
-			}
+		if ai := int(idx.At(i)); ai > 0 && ai < attrs.Len() && r.str(attrs.At(ai).KeyStrindex()) == key {
+			return attrs.At(ai).Value().AsString()
 		}
 	}
 	return ""
+}
+
+// thread returns the sample's thread.name (the kernel comm), or "".
+func (r *resolver) thread(s pprofile.Sample) string {
+	return r.attr(s.AttributeIndices(), "thread.name")
 }
 
 func (r *resolver) str(i int32) string {

@@ -237,6 +237,14 @@ The profiler needs nodes in the host PID namespace: real nodes, not k3d or kind
   `agent.yaml`).
 - **Ingest.** Each OTLP batch becomes plain samples: time, process, thread, on/off
   CPU, frames (leaf first) and weight. kenbun's own processes are skipped.
+- **Native names.** The profiler names Go, Python and kernel frames, but sends
+  C, C++ and Rust code as an address in a binary. kenbun names those from the
+  symbols on this machine, never over the network: the debug file of the binary's
+  `-debug`/`-dbgsym` package (in `/usr/lib/debug`) if it's installed, else the
+  functions the binary exports. A file is used only if its build ID matches, so
+  profiles from other machines stay `[libfoo.so]` rather than get wrong names. For
+  full names of a library, install its debug package (on Arch, enable the
+  `core-debug` and `extra-debug` repositories).
 - **Store.** Portable SQL through `database/sql` on a pure-Go SQLite. The database
   filters and sums; self/total, flame trees and loop analysis happen in Go. Samples
   older than 30 minutes and the stacks nobody uses any more are pruned every 30s.

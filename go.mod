@@ -6,6 +6,7 @@ require (
 	charm.land/bubbletea/v2 v2.1.0
 	charm.land/lipgloss/v2 v2.0.6
 	github.com/charmbracelet/colorprofile v0.4.3
+	github.com/ianlancetaylor/demangle v0.0.0-20260724033716-83e58baca724
 	github.com/open-telemetry/opentelemetry-collector-contrib/exporter/fileexporter v0.162.0
 	github.com/open-telemetry/opentelemetry-collector-contrib/processor/k8sattributesprocessor v1.1.0
 	go.opentelemetry.io/collector/component v1.68.0

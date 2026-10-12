@@ -6,6 +6,7 @@ require (
 	charm.land/bubbletea/v2 v2.1.0
 	charm.land/lipgloss/v2 v2.0.6
 	github.com/charmbracelet/colorprofile v0.4.3
+	github.com/charmbracelet/x/ansi v0.11.9
 	github.com/ianlancetaylor/demangle v0.0.0-20260724033716-83e58baca724
 	github.com/open-telemetry/opentelemetry-collector-contrib/exporter/fileexporter v0.162.0
 	github.com/open-telemetry/opentelemetry-collector-contrib/processor/k8sattributesprocessor v1.1.0
@@ -26,6 +27,7 @@ require (
 	go.opentelemetry.io/collector/receiver/otlpreceiver v0.162.0
 	go.opentelemetry.io/collector/service v0.162.0
 	go.opentelemetry.io/ebpf-profiler v0.0.202636
+	golang.org/x/sys v0.48.0
 	golang.org/x/term v0.46.0
 	modernc.org/sqlite v1.60.1
 )
@@ -41,7 +43,6 @@ require (
 	github.com/cenkalti/backoff/v7 v7.0.0 // indirect
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
 	github.com/charmbracelet/ultraviolet v0.0.0-20261008173134-6b8d4baf91b4 // indirect
-	github.com/charmbracelet/x/ansi v0.11.9 // indirect
 	github.com/charmbracelet/x/term v0.2.2 // indirect
 	github.com/charmbracelet/x/termios v0.1.1 // indirect
 	github.com/charmbracelet/x/windows v0.2.2 // indirect
@@ -229,7 +230,6 @@ require (
 	golang.org/x/net v0.59.0 // indirect
 	golang.org/x/oauth2 v0.36.0 // indirect
 	golang.org/x/sync v0.23.0 // indirect
-	golang.org/x/sys v0.48.0 // indirect
 	golang.org/x/text v0.42.0 // indirect
 	golang.org/x/time v0.15.0 // indirect
 	gonum.org/v1/gonum v0.17.0 // indirect

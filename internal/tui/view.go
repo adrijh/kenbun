@@ -103,7 +103,10 @@ func (m model) View() tea.View {
 	if pad := m.h - 2 - strings.Count(b.String(), "\n"); pad > 0 {
 		b.WriteString(strings.Repeat("\n", pad))
 	}
-	if m.err != nil {
+	switch {
+	case m.fixing != "":
+		b.WriteString(pauseS.Render(m.clip("… "+m.fixing, 0)))
+	case m.err != nil:
 		b.WriteString(upS.Render(m.clip("✗ "+m.err.Error(), 0)))
 	}
 	b.WriteString("\n" + m.footer())
@@ -169,7 +172,12 @@ func (m model) footer() string {
 	last := key([2]string{"?", "help"})
 	var parts []string
 	used := lipgloss.Width(last)
-	for _, k := range slices.Concat(keys[m.screen], common) {
+	var fix [][2]string
+	if f := m.fixer(); f != nil && m.fixing == "" {
+		what, _ := f.Fix()
+		fix = [][2]string{{"i", what}}
+	}
+	for _, k := range slices.Concat(fix, keys[m.screen], common) {
 		if k[0] == "a" && !m.hasLoop() {
 			continue
 		}
@@ -227,6 +235,10 @@ func fmtDur(d time.Duration) string {
 }
 
 func (m model) viewProcs(b *strings.Builder, rows int) {
+	if len(m.procs) == 0 && m.python {
+		b.WriteString("  no Python processes running" + redS.Render(" ▌") + "\n")
+		return
+	}
 	if len(m.procs) == 0 {
 		wait := "  awaiting profiles"
 		if m.otlp != "" {

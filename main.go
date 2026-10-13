@@ -33,6 +33,7 @@ import (
 	"go.opentelemetry.io/collector/exporter/otlpexporter"
 	"go.opentelemetry.io/collector/featuregate"
 	"go.opentelemetry.io/collector/otelcol"
+	"go.opentelemetry.io/collector/processor/memorylimiterprocessor"
 	"go.opentelemetry.io/collector/receiver/otlpreceiver"
 	"go.opentelemetry.io/collector/service/telemetry/otelconftelemetry"
 	profiler "go.opentelemetry.io/ebpf-profiler/collector"
@@ -639,7 +640,7 @@ func newCollector(st *store.Store, uris []string) (*otelcol.Collector, error) {
 			if err != nil {
 				return otelcol.Factories{}, err
 			}
-			processors, err := otelcol.MakeFactoryMap(k8sattributesprocessor.NewFactory())
+			processors, err := otelcol.MakeFactoryMap(k8sattributesprocessor.NewFactory(), memorylimiterprocessor.NewFactory())
 			if err != nil {
 				return otelcol.Factories{}, err
 			}

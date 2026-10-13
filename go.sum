@@ -436,6 +436,8 @@ go.opentelemetry.io/collector/internal/componentalias v0.162.0 h1:VTfVHEdcc5kueY
 go.opentelemetry.io/collector/internal/componentalias v0.162.0/go.mod h1:mW1LPEHX2xu89beM/l54b8vT2f/fHTeR4ykCupVItgM=
 go.opentelemetry.io/collector/internal/fanoutconsumer v0.162.0 h1:gIKDKzKsM8mUTJoC7u7wJIAjF7+1mCti+8GaQ6OuKPo=
 go.opentelemetry.io/collector/internal/fanoutconsumer v0.162.0/go.mod h1:sN5LRVNZHoX1atsT9vzFdb9A4TdFFOlGFDz0zbDyefQ=
+go.opentelemetry.io/collector/internal/memorylimiter v0.162.0 h1:ZFgbqxBA5LG2DrOHHodQaT7FXcISXlY18wQVyWjP/SQ=
+go.opentelemetry.io/collector/internal/memorylimiter v0.162.0/go.mod h1:c6Fi/g5jidUXqmS7DzvLOX87NZJkoTdSYImKGUni84M=
 go.opentelemetry.io/collector/internal/sharedcomponent v0.162.0 h1:Wjjd0qQv3OS1dHvBGbpJh2uJvk3242c2g/Kiju4Df/w=
 go.opentelemetry.io/collector/internal/sharedcomponent v0.162.0/go.mod h1:kj3D4tGkTVPFD8d0L9dIomSDHqulNnSUsED1DvZwNyM=
 go.opentelemetry.io/collector/internal/telemetry v0.162.0 h1:5pgPPirB82Z5lmLodNDlgKOkry+RNOepOMWpZmUYRcc=
@@ -458,6 +460,8 @@ go.opentelemetry.io/collector/pipeline/xpipeline v0.162.0 h1:WyHUpcXe4Q6pe417Ugz
 go.opentelemetry.io/collector/pipeline/xpipeline v0.162.0/go.mod h1:qkDHIj0rxYawSOSPEsuQw03/xCQ/WBIitI2/20kwHp8=
 go.opentelemetry.io/collector/processor v1.68.0 h1:LxCsYmkvhJ2CZXrYma06OY3gDBNAf6Gr2O+v7W6iJ20=
 go.opentelemetry.io/collector/processor v1.68.0/go.mod h1:k3UfAJSt8lnB508ngNMNlvaeLAl9zubpLYEbT91KfMw=
+go.opentelemetry.io/collector/processor/memorylimiterprocessor v0.162.0 h1:uQO3rprlGDg1IaHtDcmg7RMoDbInYFO+FyLzd1u75ZE=
+go.opentelemetry.io/collector/processor/memorylimiterprocessor v0.162.0/go.mod h1:ey6zHMqc/kMtPM2gcsdUYI9RwpbMeCABdyakyOeM/4o=
 go.opentelemetry.io/collector/processor/processorhelper v0.162.0 h1:ljWeYqOqoITm2n/RkUj1GVLrMR1Y+lEp0fHlaEP6g50=
 go.opentelemetry.io/collector/processor/processorhelper v0.162.0/go.mod h1:f4Xm+DOCBzG1LTva344kipzBlU3ZpUeEGsVVayW6qB4=
 go.opentelemetry.io/collector/processor/processorhelper/xprocessorhelper v0.162.0 h1:MiWRCfi51OXXS46NSL5zr5zWAkEth1+x91ycXEIVgjA=

@@ -29,6 +29,10 @@ exporters:
     endpoint: kenbun.kenbun.svc:4317
     tls:
       insecure: true
+    # One batch in flight per node (default 10): after a kenbun restart every
+    # node flushes its queue at once, and 10 x nodes batches OOMed it.
+    sending_queue:
+      num_consumers: 1
 
 service:
   pipelines:

@@ -181,7 +181,7 @@ Notes:
 
 - Off-CPU time is sampled: the probe records 20% of context switches, so waiting
   shares are estimates that settle over longer windows. CPU shares are sampled
-  steadily at 97 Hz.
+  steadily at 19 Hz.
 - Off-CPU samples are kept only inside asyncio loops; elsewhere kenbun stays an
   on-CPU profiler.
 - Needs CPython's pure-Python `asyncio` loop. uvloop runs its loop in compiled

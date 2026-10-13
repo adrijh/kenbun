@@ -12,7 +12,7 @@ import (
 // Loop needs them to put on-CPU sample counts and sampled off-CPU nanoseconds
 // on one time scale.
 const (
-	SamplesPerSecond = 97  // prime: avoids lockstep with periodic work
+	SamplesPerSecond = 19  // prime: avoids lockstep with periodic work
 	OffCPUThreshold  = 0.2 // share of context switches the off-CPU probe records
 )
 

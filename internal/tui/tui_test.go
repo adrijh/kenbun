@@ -124,11 +124,11 @@ func TestStep(t *testing.T) {
 func TestCPU(t *testing.T) {
 	end := time.Unix(10_000, 0)
 	m := model{win: 1, asOf: end} // 1m, data for all of it
-	if got := m.cpu(97 * 60); got != "1000m" {
+	if got := m.cpu(store.SamplesPerSecond * 60); got != "1000m" {
 		t.Errorf("a core for a minute = %s, want 1000m", got)
 	}
 	m.oldest = end.Add(-29500 * time.Millisecond) // kenbun started 30s ago
-	if got := m.cpu(97 * 30); got != "1000m" {
+	if got := m.cpu(store.SamplesPerSecond * 30); got != "1000m" {
 		t.Errorf("a core for the 30s there is = %s, want 1000m", got)
 	}
 }

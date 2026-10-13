@@ -5,6 +5,20 @@ receivers:
     protocols:
       grpc:
         endpoint: localhost:4317
+        # Requests are decoded before memory_limiter sees them: a cluster's
+        # agents sending at once (after a restart) OOMed kenbun while decoding.
+        # Per connection, so per agent.
+        max_concurrent_streams: 2
+
+# Backpressure: past the soft limit it refuses batches with a retryable error,
+# so senders back off and retry instead of piling up here (a cluster's agents
+# flushing their queues at once after a restart OOMed kenbun). Percentages are
+# of the container's memory limit, or the machine's without one.
+processors:
+  memory_limiter:
+    check_interval: 1s
+    limit_percentage: 75
+    spike_limit_percentage: 20
 
 exporters:
   kenbun:
@@ -13,6 +27,7 @@ service:
   pipelines:
     profiles:
       receivers: [otlp]
+      processors: [memory_limiter]
       exporters: [kenbun]
   telemetry:
     metrics:

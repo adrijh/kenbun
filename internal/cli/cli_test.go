@@ -4,11 +4,13 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/adrijh/kenbun/internal/ingest"
+	"github.com/adrijh/kenbun/internal/store"
 	"github.com/adrijh/kenbun/internal/store/sqlite"
 )
 
@@ -84,7 +86,8 @@ func TestCommands(t *testing.T) {
 	// An hour of --since on 13s of data averages CPU over the 13s.
 	long := q
 	long.Since = time.Hour
-	if s := run("top --since 1h", func() error { return Top(ctx, long) }); !strings.Contains(s, "last 13s (all there is) · 703m CPU") {
+	want := fmt.Sprintf("last 13s (all there is) · %dm CPU", store.Millicores(887, 13*time.Second))
+	if s := run("top --since 1h", func() error { return Top(ctx, long) }); !strings.Contains(s, want) {
 		t.Errorf("top should fit the window to the data")
 	}
 

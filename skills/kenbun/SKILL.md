@@ -78,8 +78,8 @@ A header saying `last 2m (all there is)` means kenbun holds less than the
 `--since` you asked for (it just started, or a short capture): numbers cover what
 there is, and `diff` then compares its two halves. Before concluding, check the
 sample counts in each header. kenbun samples each CPU
-97 times a second, so a process at 5m CPU over 5 minutes has ~150 samples: shifts
-of a few points are noise there. Prefer a longer `--since` for quiet processes, and
+19 times a second, so a process at 5m CPU over 5 minutes has ~30 samples: shifts
+of several points are noise there. Prefer a longer `--since` for quiet processes, and
 say how much data a claim rests on.
 
 ## Reading frames

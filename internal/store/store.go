@@ -18,7 +18,6 @@ import (
 	"hash/fnv"
 	"slices"
 	"strings"
-	"sync"
 	"time"
 )
 
@@ -100,13 +99,16 @@ type Store struct {
 	maintenance []string
 	onClose     func() error
 
-	mu   sync.Mutex // serializes Ingest (SQLite allows one writer anyway)
+	// mu serializes Ingest and prune (SQLite allows one writer anyway). A
+	// channel, not a sync.Mutex, so a waiting Ingest gives up with its context:
+	// a sender that timed out retries the batch, and kenbun mustn't keep both.
+	mu   chan struct{}
 	seen map[int64]struct{}
 }
 
 // New creates the schema and returns a ready store. It takes ownership of db.
 func New(db *sql.DB, d Dialect) (*Store, error) {
-	s := &Store{db: db, maintenance: d.Maintenance, onClose: d.OnClose, seen: map[int64]struct{}{}}
+	s := &Store{db: db, maintenance: d.Maintenance, onClose: d.OnClose, mu: make(chan struct{}, 1), seen: map[int64]struct{}{}}
 	for _, stmt := range d.Schema {
 		if _, err := db.Exec(stmt); err != nil {
 			s.Close()
@@ -133,8 +135,12 @@ func (s *Store) Ingest(ctx context.Context, samples []Sample) error {
 	if len(samples) == 0 {
 		return nil
 	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	select {
+	case s.mu <- struct{}{}:
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+	defer func() { <-s.mu }()
 
 	ids := make([]int64, len(samples))
 	newStacks := map[int64][2]string{}
@@ -223,8 +229,8 @@ func (s *Store) loadSeen() error {
 }
 
 func (s *Store) prune(ctx context.Context, before time.Time) error {
-	s.mu.Lock() // no Ingest may trust seen while stacks are deleted
-	defer s.mu.Unlock()
+	s.mu <- struct{}{} // no Ingest may trust seen while stacks are deleted
+	defer func() { <-s.mu }()
 	if _, err := s.db.ExecContext(ctx, `DELETE FROM samples WHERE ts < ?`, before.UnixNano()); err != nil {
 		return err
 	}

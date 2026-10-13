@@ -17,8 +17,8 @@ func TestLoop(t *testing.T) {
 	stacks := []ThreadStack{
 		// time.sleep in a handler: off CPU inside a callback.
 		{Thread: "python3", OffCPU: true, Weight: ms(40), Frames: cb("finish_task_switch.isra.0", "do_nanosleep", "[libc.so.6]", "[libpython3.14.so.1.0]", "slow_handler")},
-		// CPU-heavy handler: 97 samples = 1s; a nested call still counts for the handler.
-		{Thread: "python3", Weight: 97, Frames: cb("fib", "fib", "cpu_handler")},
+		// CPU-heavy handler: SamplesPerSecond samples = 1s; a nested call still counts for the handler.
+		{Thread: "python3", Weight: SamplesPerSecond, Frames: cb("fib", "fib", "cpu_handler")},
 		{Thread: "python3", OffCPU: true, Weight: ms(2), Frames: cb("finish_task_switch.isra.0", "cpu_handler")}, // preempted
 		// Waiting in epoll: idle.
 		{Thread: "python3", OffCPU: true, Weight: ms(100), Frames: stack("finish_task_switch.isra.0", "do_epoll_wait", "[libc.so.6]", "_PollLikeSelector.select")},
@@ -40,7 +40,7 @@ func TestLoop(t *testing.T) {
 		Wait:   200*time.Millisecond + 10*time.Millisecond, // ÷ OffCPUThreshold
 		CPU:    sec,
 		Idle:   500 * time.Millisecond,
-		Total:  sec + 210*time.Millisecond + 500*time.Millisecond + sec/97,
+		Total:  sec + 210*time.Millisecond + 500*time.Millisecond + sec/SamplesPerSecond,
 	}
 	if l.Thread != want.Thread || l.Wait != want.Wait || l.CPU != want.CPU || l.Idle != want.Idle || l.Total != want.Total {
 		t.Errorf("Loop = %+v, want %+v", l, want)

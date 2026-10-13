@@ -80,3 +80,29 @@ func TestPruneStacks(t *testing.T) {
 		t.Errorf("Stacks after re-ingest = %+v, %v; want the old stack", got, err)
 	}
 }
+
+// A batch waiting for the writer gives up with its context instead of holding
+// the batch until the writer is free (its sender has retried it by then).
+func TestIngestGivesUpWaiting(t *testing.T) {
+	db, err := sql.Open("sqlite", ":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	s, err := New(db, Dialect{Schema: BaseSchema})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+
+	s.mu <- struct{}{} // another Ingest or a prune is writing
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+	err = s.Ingest(ctx, []Sample{{TS: time.Now(), Process: "p", Frames: []string{"f"}, Weight: 1}})
+	if err != context.DeadlineExceeded {
+		t.Fatalf("Ingest while busy = %v, want context.DeadlineExceeded", err)
+	}
+	<-s.mu
+	if err := s.Ingest(context.Background(), []Sample{{TS: time.Now(), Process: "p", Frames: []string{"f"}, Weight: 1}}); err != nil {
+		t.Fatalf("Ingest once free = %v", err)
+	}
+}

@@ -54,6 +54,8 @@ spec:
           imagePullPolicy: IfNotPresent
           args: [agent, --to=kenbun.kenbun.svc:4317]
           env:
+            - name: GOMEMLIMIT # Go's own heap; leaves room for eBPF maps under the limit
+              value: 400MiB
             - name: KUBE_NODE_NAME
               valueFrom:
                 fieldRef:

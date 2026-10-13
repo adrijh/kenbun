@@ -77,8 +77,8 @@ const usage = `kenbun: OTLP profiles in your terminal
   collecting on this machine:
       kenbun [--profile] [--otlp addr] [--dump file]
                               with the TUI, which also serves queries on localhost:7070
-      kenbun serve [--profile] [--otlp addr] [--dump file] [--http addr]
-                              headless
+      kenbun serve [--profile] [--otlp addr] [--dump file] [--http addr] [--db file]
+                              headless; --db keeps samples on disk, not in memory
       --profile runs the eBPF profiler on every process here (Linux, root)
 
   kenbun k8s deploy [--context c] [--image i] [--profiler=false]
@@ -294,6 +294,7 @@ func runServe(args []string) error {
 	httpAddr := fs.String("http", ":7070", "HTTP API listen address")
 	dump := fs.String("dump", "", "also write received profiles to this JSONL file")
 	profile := fs.Bool("profile", false, "also profile this machine with the embedded eBPF profiler (Linux, needs root)")
+	db := fs.String("db", "", "keep samples in this SQLite file instead of in memory")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -301,7 +302,7 @@ func runServe(args []string) error {
 		return errors.New("--profile uses eBPF and only works on Linux")
 	}
 
-	st, err := sqlite.Open("")
+	st, err := sqlite.Open(*db)
 	if err != nil {
 		return err
 	}

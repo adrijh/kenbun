@@ -2,6 +2,8 @@ package sqlite
 
 import (
 	"context"
+	"database/sql"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -100,5 +102,53 @@ func TestAsyncioLoopFixture(t *testing.T) {
 		if f.Name == "sleepy_handler" {
 			t.Errorf("sleepy_handler in on-CPU Top: %+v", f)
 		}
+	}
+}
+
+// Temp tables must not need a writable temp directory (read-only root in k8s).
+func TestTempStoreInMemory(t *testing.T) {
+	for _, path := range []string{"", filepath.Join(t.TempDir(), "kenbun.db")} {
+		db, err := sql.Open("sqlite", dsn(path))
+		if err != nil {
+			t.Fatal(err)
+		}
+		var mode int
+		if err := db.QueryRow(`PRAGMA temp_store`).Scan(&mode); err != nil {
+			t.Fatal(err)
+		}
+		db.Close()
+		if mode != 2 { // MEMORY
+			t.Errorf("Open(%q): temp_store = %d, want 2 (MEMORY)", path, mode)
+		}
+	}
+}
+
+// A file store keeps its samples across a reopen (a container restart).
+func TestFileReopen(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "kenbun.db")
+	st, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	samples, err := ingest.ReadJSONL("../../ingest/testdata/profiles.jsonl")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := st.Ingest(ctx, samples); err != nil {
+		t.Fatal(err)
+	}
+	st.Close()
+
+	if st, err = Open(path); err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	procs, err := st.Processes(ctx, time.Time{}, time.Now().Add(time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(procs) == 0 || procs[0].Weight != 657 {
+		t.Fatalf("after reopen Processes() = %+v, want python3.14/657", procs)
 	}
 }

@@ -108,7 +108,7 @@ Collecting on this machine:
 | Command | |
 |---|---|
 | `kenbun [--profile] [--otlp addr] [--dump file]` | Receive profiles (`--profile`: also run the eBPF profiler) and open the TUI. It also answers queries on `localhost:7070`, so an agent can ask about what you're watching. |
-| `kenbun serve [--profile] [--otlp addr] [--dump file] [--http addr]` | The same without the TUI, for headless boxes. |
+| `kenbun serve [--profile] [--otlp addr] [--dump file] [--http addr] [--db file]` | The same without the TUI, for headless boxes. `--db` keeps samples in a SQLite file instead of in memory. |
 | `kenbun k8s deploy \| destroy \| manifests` | Set kenbun up on a cluster. See [Kubernetes](#船--kubernetes). |
 
 The TUI writes its logs (and the collector's) to `$XDG_STATE_HOME/kenbun/kenbun.log`
@@ -211,6 +211,8 @@ terminal (scripts, CI, agents) it just applies.
 `deploy` creates a `kenbun` namespace with:
 
 - **kenbun** (Deployment): `kenbun serve`, receiving OTLP on `kenbun.kenbun.svc:4317`.
+  It keeps samples on disk (an `emptyDir`): 30 minutes of a whole cluster's profiles
+  take gigabytes, far more than its memory limit.
 - **kenbun-profiler** (DaemonSet): `kenbun agent` on every node, from the same image,
   so the Alpha profiles protocol always matches. It runs the eBPF profiler with
   off-CPU sampling and the collector's `k8s_attributes` processor.

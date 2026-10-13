@@ -640,7 +640,7 @@ func newCollector(st *store.Store, uris []string) (*otelcol.Collector, error) {
 			if err != nil {
 				return otelcol.Factories{}, err
 			}
-			processors, err := otelcol.MakeFactoryMap(k8sattributesprocessor.NewFactory(), memorylimiterprocessor.NewFactory())
+			processors, err := otelcol.MakeFactoryMap(k8sattributesprocessor.NewFactory(), memorylimiterprocessor.NewFactory(), ingest.NewFilterFactory())
 			if err != nil {
 				return otelcol.Factories{}, err
 			}

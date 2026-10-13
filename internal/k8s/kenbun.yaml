@@ -13,7 +13,7 @@ metadata:
   labels:
     app.kubernetes.io/name: kenbun
 spec:
-  replicas: 1 # in-memory store: each replica would hold a slice of the data
+  replicas: 1 # each replica would hold a slice of the data
   selector:
     matchLabels:
       app.kubernetes.io/name: kenbun
@@ -22,12 +22,17 @@ spec:
       labels:
         app.kubernetes.io/name: kenbun
     spec:
-      terminationGracePeriodSeconds: 5 # in-memory, nothing to flush
+      terminationGracePeriodSeconds: 5 # SQLite's WAL survives a kill
       containers:
         - name: kenbun
           image: kenbun:dev
           imagePullPolicy: IfNotPresent
-          args: [serve]
+          # On disk, not in memory: 30 min of a cluster's profiles outgrow RAM.
+          # The emptyDir also keeps them across container restarts.
+          args: [serve, --db=/data/kenbun.db]
+          env:
+            - name: GOMEMLIMIT # Go's own heap; leaves the rest to SQLite's page cache
+              value: 800MiB
           ports:
             - name: otlp-grpc
               containerPort: 4317
@@ -47,6 +52,13 @@ spec:
             readOnlyRootFilesystem: true
             capabilities:
               drop: [ALL]
+          volumeMounts:
+            - name: data
+              mountPath: /data
+      volumes:
+        - name: data
+          emptyDir:
+            sizeLimit: 5Gi # ~2.5Gi for 30 min; deleted rows' space is reused
 ---
 apiVersion: v1
 kind: Service

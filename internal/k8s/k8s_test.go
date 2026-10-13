@@ -13,6 +13,8 @@ func TestManifests(t *testing.T) {
 	for _, want := range []string{
 		"kind: DaemonSet",
 		"args: [agent,",
+		"args: [serve, --db=/data/kenbun.db]",
+		"mountPath: /data",
 	} {
 		if !strings.Contains(m, want) {
 			t.Errorf("manifests lack %q", want)

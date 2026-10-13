@@ -25,15 +25,7 @@ var maintenance = []string{
 
 // Open opens or creates a SQLite database. An empty path means in-memory.
 func Open(path string) (*store.Store, error) {
-	dsn := "file:" + path +
-		"?_pragma=journal_mode(WAL)" + // readers don't block the writer
-		"&_pragma=synchronous(NORMAL)" +
-		"&_pragma=busy_timeout(5000)"
-	if path == "" {
-		dsn = ":memory:"
-	}
-
-	db, err := sql.Open("sqlite", dsn)
+	db, err := sql.Open("sqlite", dsn(path))
 	if err != nil {
 		return nil, fmt.Errorf("open sqlite: %w", err)
 	}
@@ -46,4 +38,20 @@ func Open(path string) (*store.Store, error) {
 		Schema:      schema,
 		Maintenance: maintenance,
 	})
+}
+
+// Temp tables (GROUP BY, NOT IN subqueries) stay in memory: SQLite would put
+// them in a temp file once they outgrow its cache, and finds no writable
+// directory on a read-only root filesystem (SQLITE_IOERR_GETTEMPPATH).
+const tempStore = "_pragma=temp_store(MEMORY)"
+
+func dsn(path string) string {
+	if path == "" {
+		return ":memory:?" + tempStore
+	}
+	return "file:" + path +
+		"?_pragma=journal_mode(WAL)" + // readers don't block the writer
+		"&_pragma=synchronous(NORMAL)" +
+		"&_pragma=busy_timeout(5000)" +
+		"&" + tempStore
 }
